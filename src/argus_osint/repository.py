@@ -28,6 +28,8 @@ def decode_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         "filters",
         "permissions",
         "config",
+        "options",
+        "reasons",
     }
     for row in rows:
         for field in json_fields & row.keys():
@@ -173,8 +175,9 @@ class Repository:
             {**source["metadata"], "duplicated_from": case_id},
         )
         entity_map: dict[int, int] = {}
+        intelligence_map: dict[int, int] = {}
         with self.db.transaction() as connection:
-            for table in ("notes", "bookmarks", "intelligence"):
+            for table in ("notes", "bookmarks", "evidence"):
                 columns = [
                     r[1]
                     for r in connection.execute(f"PRAGMA table_info({table})")
@@ -185,6 +188,23 @@ class Repository:
                     f"INSERT INTO {table}(investigation_id,{joined}) SELECT ?,{joined} FROM {table} WHERE investigation_id=?",
                     (new_id, case_id),
                 )
+            for intelligence in connection.execute(
+                "SELECT * FROM intelligence WHERE investigation_id=?", (case_id,)
+            ):
+                cursor = connection.execute(
+                    "INSERT INTO intelligence(investigation_id,collector,query,title,source_url,data,confidence,collected_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        new_id,
+                        intelligence["collector"],
+                        intelligence["query"],
+                        intelligence["title"],
+                        intelligence["source_url"],
+                        intelligence["data"],
+                        intelligence["confidence"],
+                        intelligence["collected_at"],
+                    ),
+                )
+                intelligence_map[intelligence["id"]] = int(cursor.lastrowid)
             for entity in connection.execute(
                 "SELECT * FROM entities WHERE investigation_id=?", (case_id,)
             ):
@@ -237,6 +257,58 @@ class Repository:
                         entity_map.get(event["entity_id"]),
                         event["attributes"],
                         event["created_at"],
+                    ),
+                )
+            for alias in connection.execute(
+                "SELECT * FROM entity_aliases WHERE investigation_id=?", (case_id,)
+            ):
+                connection.execute(
+                    "INSERT INTO entity_aliases(investigation_id,entity_id,alias,normalized,kind,source_url,confidence,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                    (
+                        new_id,
+                        entity_map[alias["entity_id"]],
+                        alias["alias"],
+                        alias["normalized"],
+                        alias["kind"],
+                        alias["source_url"],
+                        alias["confidence"],
+                        alias["created_at"],
+                    ),
+                )
+            for source_record in connection.execute(
+                "SELECT * FROM source_records WHERE investigation_id=?", (case_id,)
+            ):
+                connection.execute(
+                    "INSERT INTO source_records(investigation_id,intelligence_id,url,title,publisher,published_at,retrieved_at,content_hash,snapshot_path,metadata) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        new_id,
+                        intelligence_map.get(source_record["intelligence_id"]),
+                        source_record["url"],
+                        source_record["title"],
+                        source_record["publisher"],
+                        source_record["published_at"],
+                        source_record["retrieved_at"],
+                        source_record["content_hash"],
+                        source_record["snapshot_path"],
+                        source_record["metadata"],
+                    ),
+                )
+            for location in connection.execute(
+                "SELECT * FROM locations WHERE investigation_id=?", (case_id,)
+            ):
+                connection.execute(
+                    "INSERT INTO locations(investigation_id,entity_id,intelligence_id,latitude,longitude,label,source_url,confidence,attributes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        new_id,
+                        entity_map.get(location["entity_id"]),
+                        intelligence_map.get(location["intelligence_id"]),
+                        location["latitude"],
+                        location["longitude"],
+                        location["label"],
+                        location["source_url"],
+                        location["confidence"],
+                        location["attributes"],
+                        location["created_at"],
                     ),
                 )
             self._audit(
@@ -301,6 +373,22 @@ class Repository:
                     "UPDATE timeline_events SET entity_id=? WHERE investigation_id=? AND entity_id=?",
                     (new_entity_id, source_id, old_entity_id),
                 )
+                connection.execute(
+                    "INSERT OR IGNORE INTO entity_aliases(investigation_id,entity_id,alias,normalized,kind,source_url,confidence,created_at) "
+                    "SELECT ?,?,alias,normalized,kind,source_url,confidence,created_at FROM entity_aliases WHERE investigation_id=? AND entity_id=?",
+                    (target_id, new_entity_id, source_id, old_entity_id),
+                )
+                connection.execute(
+                    "UPDATE comments SET object_id=? WHERE investigation_id=? AND object_type='entity' AND object_id=?",
+                    (new_entity_id, source_id, old_entity_id),
+                )
+                connection.execute(
+                    "UPDATE locations SET entity_id=? WHERE investigation_id=? AND entity_id=?",
+                    (new_entity_id, source_id, old_entity_id),
+                )
+            connection.execute(
+                "DELETE FROM correlation_suggestions WHERE investigation_id=?", (source_id,)
+            )
             for table in (
                 "notes",
                 "evidence",
@@ -308,6 +396,10 @@ class Repository:
                 "timeline_events",
                 "intelligence",
                 "search_history",
+                "source_records",
+                "comments",
+                "locations",
+                "collection_jobs",
             ):
                 connection.execute(
                     f"UPDATE {table} SET investigation_id=? WHERE investigation_id=?",
@@ -500,6 +592,291 @@ class Repository:
             )
         return item_id
 
+    def add_bookmark(
+        self,
+        case_id: int,
+        title: str,
+        url: str,
+        description: str = "",
+        tags: list[str] | None = None,
+    ) -> int:
+        if not title.strip() or not url.strip():
+            raise ValueError("Bookmark title and URL are required")
+        with self.db.transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO bookmarks(investigation_id,title,url,description,tags,created_at) VALUES(?,?,?,?,?,?)",
+                (
+                    case_id,
+                    title.strip(),
+                    url.strip(),
+                    description.strip(),
+                    encode(tags or []),
+                    now(),
+                ),
+            )
+            item_id = int(cursor.lastrowid)
+            self._index(
+                connection,
+                "bookmark",
+                item_id,
+                case_id,
+                title,
+                f"{description} {url}",
+                tags,
+            )
+            self._audit(connection, "create", "bookmark", item_id, case_id)
+        return item_id
+
+    def add_comment(
+        self, case_id: int, object_type: str, object_id: int, body: str, author: str = ""
+    ) -> int:
+        if not object_type.strip() or not body.strip():
+            raise ValueError("Comment target and body are required")
+        with self.db.transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO comments(investigation_id,object_type,object_id,body,author,created_at) VALUES(?,?,?,?,?,?)",
+                (
+                    case_id,
+                    object_type.strip(),
+                    object_id,
+                    body.strip(),
+                    author or self.actor,
+                    now(),
+                ),
+            )
+            item_id = int(cursor.lastrowid)
+            self._index(connection, "comment", item_id, case_id, object_type, body)
+            self._audit(
+                connection,
+                "comment",
+                object_type,
+                object_id,
+                case_id,
+                {"comment_id": item_id},
+            )
+        return item_id
+
+    def add_alias(
+        self,
+        case_id: int,
+        entity_id: int,
+        alias: str,
+        normalized: str,
+        kind: str = "alias",
+        source_url: str = "",
+        confidence: float = 0.5,
+    ) -> int:
+        if not alias.strip() or not normalized.strip():
+            raise ValueError("Alias and normalized value are required")
+        with self.db.transaction() as connection:
+            if not connection.execute(
+                "SELECT 1 FROM entities WHERE id=? AND investigation_id=?", (entity_id, case_id)
+            ).fetchone():
+                raise ValueError("Entity does not belong to this investigation")
+            cursor = connection.execute(
+                "INSERT INTO entity_aliases(investigation_id,entity_id,alias,normalized,kind,source_url,confidence,created_at) VALUES(?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(investigation_id,entity_id,normalized,kind) DO UPDATE SET confidence=MAX(entity_aliases.confidence,excluded.confidence),source_url=CASE WHEN excluded.source_url<>'' THEN excluded.source_url ELSE entity_aliases.source_url END RETURNING id",
+                (
+                    case_id,
+                    entity_id,
+                    alias.strip(),
+                    normalized.strip(),
+                    kind.strip(),
+                    source_url.strip(),
+                    confidence,
+                    now(),
+                ),
+            )
+            item_id = int(cursor.fetchone()[0])
+            self._audit(connection, "upsert", "entity_alias", item_id, case_id)
+        return item_id
+
+    def add_location(
+        self,
+        case_id: int,
+        latitude: float,
+        longitude: float,
+        label: str = "",
+        entity_id: int | None = None,
+        intelligence_id: int | None = None,
+        source_url: str = "",
+        confidence: float = 0.5,
+        attributes: dict[str, Any] | None = None,
+    ) -> int:
+        if not -90 <= latitude <= 90 or not -180 <= longitude <= 180:
+            raise ValueError("Location coordinates are outside valid ranges")
+        with self.db.transaction() as connection:
+            cursor = connection.execute(
+                "INSERT INTO locations(investigation_id,entity_id,intelligence_id,latitude,longitude,label,source_url,confidence,attributes,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                (
+                    case_id,
+                    entity_id,
+                    intelligence_id,
+                    latitude,
+                    longitude,
+                    label.strip(),
+                    source_url.strip(),
+                    confidence,
+                    encode(attributes or {}),
+                    now(),
+                ),
+            )
+            item_id = int(cursor.lastrowid)
+            self._audit(connection, "create", "location", item_id, case_id)
+        return item_id
+
+    def save_search(self, name: str, query: str, filters: dict[str, Any] | None = None) -> int:
+        if not name.strip() or not query.strip():
+            raise ValueError("Saved search name and query are required")
+        cursor = self.db.execute(
+            "INSERT INTO saved_searches(name,query,filters,created_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(name) DO UPDATE SET query=excluded.query,filters=excluded.filters RETURNING id",
+            (name.strip(), query.strip(), encode(filters or {}), now()),
+        )
+        return int(cursor.fetchone()[0])
+
+    def saved_searches(self) -> list[dict[str, Any]]:
+        return decode_rows(self.db.all("SELECT * FROM saved_searches ORDER BY name"))
+
+    def merge_entities(self, case_id: int, source_id: int, target_id: int) -> None:
+        if source_id == target_id:
+            raise ValueError("Source and target entities must differ")
+        with self.db.transaction() as connection:
+            entities = connection.execute(
+                "SELECT * FROM entities WHERE investigation_id=? AND id IN (?,?)",
+                (case_id, source_id, target_id),
+            ).fetchall()
+            if len(entities) != 2:
+                raise ValueError("Both entities must belong to the investigation")
+            source = next(row for row in entities if row["id"] == source_id)
+            target = next(row for row in entities if row["id"] == target_id)
+            connection.execute(
+                "INSERT OR IGNORE INTO entity_aliases(investigation_id,entity_id,alias,normalized,kind,source_url,confidence,created_at) VALUES(?,?,?,?,?,?,?,?)",
+                (
+                    case_id,
+                    target_id,
+                    source["display_name"] or source["value"],
+                    source["value"].casefold(),
+                    "merged_value",
+                    source["source_url"],
+                    source["confidence"],
+                    now(),
+                ),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO entity_aliases(investigation_id,entity_id,alias,normalized,kind,source_url,confidence,created_at) "
+                "SELECT investigation_id,?,alias,normalized,kind,source_url,confidence,created_at FROM entity_aliases WHERE entity_id=?",
+                (target_id, source_id),
+            )
+            for relation in connection.execute(
+                "SELECT * FROM relationships WHERE source_entity_id=? OR target_entity_id=?",
+                (source_id, source_id),
+            ).fetchall():
+                new_source = (
+                    target_id
+                    if relation["source_entity_id"] == source_id
+                    else relation["source_entity_id"]
+                )
+                new_target = (
+                    target_id
+                    if relation["target_entity_id"] == source_id
+                    else relation["target_entity_id"]
+                )
+                if new_source != new_target:
+                    connection.execute(
+                        "INSERT OR IGNORE INTO relationships(investigation_id,source_entity_id,target_entity_id,kind,confidence,verified,source_url,attributes,created_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (
+                            case_id,
+                            new_source,
+                            new_target,
+                            relation["kind"],
+                            relation["confidence"],
+                            relation["verified"],
+                            relation["source_url"],
+                            relation["attributes"],
+                            relation["created_at"],
+                        ),
+                    )
+            connection.execute(
+                "UPDATE timeline_events SET entity_id=? WHERE entity_id=?", (target_id, source_id)
+            )
+            connection.execute(
+                "UPDATE locations SET entity_id=? WHERE entity_id=?", (target_id, source_id)
+            )
+            connection.execute(
+                "DELETE FROM correlation_suggestions WHERE source_entity_id=? OR target_entity_id=?",
+                (source_id, source_id),
+            )
+            connection.execute(
+                "DELETE FROM relationships WHERE source_entity_id=? OR target_entity_id=?",
+                (source_id, source_id),
+            )
+            connection.execute("DELETE FROM entities WHERE id=?", (source_id,))
+            merged_attributes = {
+                **json.loads(source["attributes"]),
+                **json.loads(target["attributes"]),
+            }
+            merged_tags = sorted(set(json.loads(source["tags"])) | set(json.loads(target["tags"])))
+            connection.execute(
+                "UPDATE entities SET confidence=MAX(confidence,?),verified=MAX(verified,?),attributes=?,tags=?,updated_at=? WHERE id=?",
+                (
+                    source["confidence"],
+                    source["verified"],
+                    encode(merged_attributes),
+                    encode(merged_tags),
+                    now(),
+                    target_id,
+                ),
+            )
+            connection.execute(
+                "DELETE FROM global_fts WHERE object_type='entity' AND object_id=?", (source_id,)
+            )
+            updated = connection.execute(
+                "SELECT * FROM entities WHERE id=?", (target_id,)
+            ).fetchone()
+            self._index(
+                connection,
+                "entity",
+                target_id,
+                case_id,
+                updated["display_name"] or updated["value"],
+                f"{updated['kind']} {updated['value']} {updated['attributes']}",
+                json.loads(updated["tags"]),
+            )
+            self._audit(
+                connection,
+                "merge",
+                "entity",
+                target_id,
+                case_id,
+                {"source_entity_id": source_id},
+            )
+
+    def dashboard_stats(self, case_id: int | None = None) -> dict[str, int]:
+        tables = (
+            "investigations",
+            "entities",
+            "relationships",
+            "evidence",
+            "intelligence",
+            "locations",
+            "collection_jobs",
+        )
+        result: dict[str, int] = {}
+        for table in tables:
+            if case_id is not None and table != "investigations":
+                row = self.db.one(
+                    f"SELECT COUNT(*) AS count FROM {table} WHERE investigation_id=?", (case_id,)
+                )
+            elif case_id is not None:
+                row = self.db.one(
+                    "SELECT COUNT(*) AS count FROM investigations WHERE id=?", (case_id,)
+                )
+            else:
+                row = self.db.one(f"SELECT COUNT(*) AS count FROM {table}")
+            result[table] = int(row["count"] if row else 0)
+        return result
+
     def rows(self, table: str, case_id: int) -> list[dict[str, Any]]:
         allowed = {
             "notes",
@@ -510,6 +887,12 @@ class Repository:
             "timeline_events",
             "intelligence",
             "audit_log",
+            "collection_jobs",
+            "entity_aliases",
+            "source_records",
+            "comments",
+            "locations",
+            "correlation_suggestions",
         }
         if table not in allowed:
             raise ValueError("Unsupported table")

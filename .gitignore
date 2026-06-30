@@ -2,7 +2,9 @@ __pycache__/
 *.py[cod]
 *.sqlite3*
 .pytest_cache/
-.pytest-tmp/
+.pytest-tmp*/
+.test-execution-*/
+.gui-smoke-*/
 .ruff_cache/
 .mypy_cache/
 .coverage

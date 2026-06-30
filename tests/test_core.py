@@ -2,14 +2,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+import zipfile
 from pathlib import Path
 
 import pytest
 
-from argus_osint.collectors import CollectorContext, CollectorRegistry, PhoneCollector
+from argus_osint.bundles import InvestigationBundle
+from argus_osint.collectors import (
+    CollectorContext,
+    CollectorRegistry,
+    Finding,
+    PhoneCollector,
+    UsernameCorrelationCollector,
+)
 from argus_osint.config import Settings
 from argus_osint.db import Database
 from argus_osint.evidence import EvidenceManager, sha256_file
+from argus_osint.operations import OperationManager
+from argus_osint.plugins import PluginManager
 from argus_osint.reports import ReportEngine
 from argus_osint.repository import Repository
 
@@ -106,3 +116,123 @@ def test_collector_registry_and_offline_phone_analysis(repository: Repository) -
     )
     assert findings[0].data["e164"] == "+442079460958"
     assert findings[0].entities[0]["verified"] is False
+
+    correlation = asyncio.run(
+        UsernameCorrelationCollector().collect(
+            "example_user", CollectorContext(Settings(), repository.db)
+        )
+    )[0]
+    assert all(candidate["identity_match"] is False for candidate in correlation.data["candidates"])
+    assert correlation.confidence < 0.5
+
+
+def test_plugin_install_and_out_of_process_rpc(repository: Repository, tmp_path: Path) -> None:
+    source = tmp_path / "plugin-source"
+    source.mkdir()
+    (source / "plugin.json").write_text(
+        json.dumps(
+            {
+                "id": "echo",
+                "name": "Echo",
+                "version": "1.0.0",
+                "description": "Test JSON-RPC plugin",
+                "entrypoint": "main.py",
+                "permissions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (source / "main.py").write_text(
+        "import json\nimport sys\nrequest=json.loads(sys.stdin.readline())\n"
+        "print(json.dumps({'jsonrpc':'2.0','id':request['id'],'result':request['params']}))\n",
+        encoding="utf-8",
+    )
+    package = tmp_path / "echo.zip"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.write(source / "plugin.json", "plugin.json")
+        archive.write(source / "main.py", "main.py")
+
+    manager = PluginManager(tmp_path / "plugins", repository.db)
+    assert manager.install(package).plugin_id == "echo"
+    assert asyncio.run(manager.invoke("echo", "collect", {"value": 42})) == {"value": 42}
+
+
+class DemoCollector:
+    id = "demo"
+    name = "Demo collector"
+    description = "Deterministic operation test"
+    query_hint = "query"
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        return [
+            Finding(
+                f"Result for {query}",
+                "https://example.org/public-record",
+                {"latitude": 51.5072, "longitude": -0.1276, "city": "London"},
+                0.8,
+                [
+                    {"kind": "username", "value": "alice", "verified": True},
+                    {"kind": "email", "value": "alice@example.org", "verified": False},
+                ],
+            )
+        ]
+
+
+def test_persistent_operation_provenance_location_and_correlation(
+    repository: Repository,
+) -> None:
+    case_id = repository.create_investigation("Operations")
+    registry = CollectorRegistry()
+    registry.register(DemoCollector())
+    manager = OperationManager(repository, registry, CollectorContext(Settings(), repository.db))
+    job_id = manager.create_job(case_id, "demo", "alice")
+    findings = asyncio.run(manager.run_job(job_id))
+
+    assert len(findings) == 1
+    assert repository.rows("collection_jobs", case_id)[0]["status"] == "completed"
+    assert repository.rows("source_records", case_id)[0]["content_hash"]
+    assert repository.rows("locations", case_id)[0]["label"] == "London"
+    suggestions = manager.correlation.pending(case_id)
+    assert suggestions[0]["relationship_kind"] == "possible_identity_match"
+    manager.correlation.review(suggestions[0]["id"], True)
+    assert repository.rows("relationships", case_id)[0]["verified"] is False
+
+
+def test_investigation_bundle_round_trip(repository: Repository, tmp_path: Path) -> None:
+    case_id = repository.create_investigation("Portable case", "Bundle round trip")
+    entity_id = repository.add_entity(case_id, "domain", "example.org", verified=True)
+    repository.add_note(case_id, "Finding", "A portable note")
+    repository.add_bookmark(case_id, "Source", "https://example.org/source", "Public record")
+    repository.add_location(case_id, 51.5, -0.12, "London", entity_id=entity_id)
+    repository.add_comment(case_id, "investigation", case_id, "Peer reviewed", "reviewer")
+    artifact = tmp_path / "artifact.bin"
+    artifact.write_bytes(b"evidence bytes")
+    evidence = EvidenceManager(repository, tmp_path / "managed")
+    evidence.ingest(case_id, artifact)
+    bundle = InvestigationBundle(repository, evidence)
+    path = bundle.export(case_id, tmp_path / "portable.argus")
+
+    summary = bundle.inspect(path)
+    assert summary["counts"]["evidence"] == 1
+    imported_id = bundle.import_bundle(path)
+    assert repository.investigation(imported_id)["title"] == "Portable case (imported)"
+    assert len(repository.rows("entities", imported_id)) == 1
+    assert len(repository.rows("evidence", imported_id)) == 1
+    assert len(repository.rows("comments", imported_id)) == 1
+    assert evidence.verify(repository.rows("evidence", imported_id)[0]["id"])[0]
+
+
+def test_entity_merge_preserves_aliases_links_and_locations(repository: Repository) -> None:
+    case_id = repository.create_investigation("Entity merge")
+    source = repository.add_entity(case_id, "username", "Alice")
+    target = repository.add_entity(case_id, "person", "alice", display_name="Alice Example")
+    domain = repository.add_entity(case_id, "domain", "example.org")
+    repository.add_alias(case_id, source, "@Alice", "alice", "username")
+    repository.add_relationship(case_id, source, domain, "uses")
+    repository.add_location(case_id, 10, 20, "Observation", entity_id=source)
+    repository.merge_entities(case_id, source, target)
+
+    assert {row["id"] for row in repository.rows("entities", case_id)} == {target, domain}
+    assert repository.rows("relationships", case_id)[0]["source_entity_id"] == target
+    assert repository.rows("locations", case_id)[0]["entity_id"] == target
+    assert any(alias["alias"] == "@Alice" for alias in repository.rows("entity_aliases", case_id))

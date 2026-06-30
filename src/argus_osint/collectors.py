@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import quote, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import httpx
 
@@ -19,6 +19,16 @@ from .config import SecretStore, Settings
 from .db import Database
 from .evidence import extract_metadata
 from .repository import now
+
+
+def _ensure_public_host(host: str, port: int = 443) -> None:
+    results = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    if not results:
+        raise ValueError("Host did not resolve")
+    for result in results:
+        address = ipaddress.ip_address(result[4][0])
+        if not address.is_global:
+            raise ValueError("The target must resolve only to public IP addresses")
 
 
 @dataclass(slots=True)
@@ -82,7 +92,7 @@ class CollectorContext:
         follow_redirects: bool = True,
     ) -> httpx.Response:
         cache_key = hashlib.sha256(
-            json.dumps([method, url, params], sort_keys=True).encode()
+            json.dumps([method, url, params, follow_redirects, headers], sort_keys=True).encode()
         ).hexdigest()
         if method == "GET":
             cached = self.db.one(
@@ -254,22 +264,42 @@ class WebCollector:
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("Enter a valid HTTP or HTTPS URL")
-        response = await context.request("GET", url, headers={"Accept": "text/html,*/*"})
+        history: list[dict[str, Any]] = []
+        current_url = url
+        for redirect_count in range(context.settings.max_redirects + 1):
+            current = urlparse(current_url)
+            if current.scheme not in {"http", "https"} or not current.hostname:
+                raise ValueError("A redirect left the HTTP/HTTPS public web")
+            await asyncio.to_thread(
+                _ensure_public_host,
+                current.hostname,
+                current.port or (443 if current.scheme == "https" else 80),
+            )
+            response = await context.request(
+                "GET",
+                current_url,
+                headers={"Accept": "text/html,*/*"},
+                follow_redirects=False,
+            )
+            if not response.is_redirect:
+                break
+            location = response.headers.get("location")
+            if not location:
+                break
+            history.append(
+                {"status": response.status_code, "url": current_url, "location": location}
+            )
+            current_url = urljoin(current_url, location)
+            if redirect_count == context.settings.max_redirects:
+                raise RuntimeError("Website exceeded the configured redirect limit")
+        final = urlparse(str(response.url))
         certificate = (
-            await asyncio.to_thread(self._certificate, parsed.hostname, parsed.port or 443)
-            if parsed.scheme == "https"
+            await asyncio.to_thread(self._certificate, final.hostname, final.port or 443)
+            if final.scheme == "https" and final.hostname
             else {}
         )
         body = response.text[:1_000_000]
         technologies = self._technologies(response.headers, body)
-        history = [
-            {
-                "status": item.status_code,
-                "url": str(item.url),
-                "location": item.headers.get("location", ""),
-            }
-            for item in response.history
-        ]
         data = {
             "final_url": str(response.url),
             "status": response.status_code,
@@ -855,7 +885,7 @@ class MastodonCollector:
             host,
         ):
             raise ValueError("Enter a valid Mastodon account address")
-        await asyncio.to_thread(self._ensure_public_server, host)
+        await asyncio.to_thread(_ensure_public_host, host)
         api = f"https://{host}/api/v1"
         profile = await context.get_json(
             api + "/accounts/lookup", params={"acct": username}, cache_ttl=600
@@ -881,13 +911,6 @@ class MastodonCollector:
                 ],
             )
         ]
-
-    @staticmethod
-    def _ensure_public_server(host: str) -> None:
-        for result in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM):
-            address = ipaddress.ip_address(result[4][0])
-            if not address.is_global:
-                raise ValueError("The server must resolve only to public IP addresses")
 
 
 class CompanyCollector:

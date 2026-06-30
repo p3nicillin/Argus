@@ -1,6 +1,6 @@
 # Argus OSINT
 
-Argus is a local-first, case-centric desktop workstation for lawful public-source research. It combines investigation management, evidence integrity, entity/link analysis, full-text search, reporting, and API-backed collectors in a modern PySide6 interface.
+Argus is a local-first, case-centric desktop system for lawful public-source research. It combines persistent collection operations, investigation management, evidence integrity, provenance, entity/link analysis, explainable correlation, geospatial review, full-text search, reporting, and API-backed collectors in a modern PySide6 interface.
 
 Argus does not bypass authentication or privacy controls. Its network modules use public pages and official APIs; services that require credentials read them from the operating-system credential vault.
 
@@ -10,7 +10,7 @@ Python 3.11 or newer is required.
 
 ```powershell
 python -m pip install -e ".[dev]"
-argus-osint
+python -m argus_osint.main
 ```
 
 On first launch, Argus creates a workspace in the platform-specific user-data directory. Choose **File → Open workspace** to use another folder. Add API credentials in **Settings**.
@@ -18,11 +18,16 @@ On first launch, Argus creates a workspace in the platform-specific user-data di
 ## Included capabilities
 
 - Create, edit, archive, reopen, duplicate, and merge investigations.
-- Store notes, typed entities, confidence and verification state, relationships, timelines, bookmarks, intelligence records, tags, and audit history in SQLite/WAL.
+- Queue individual or batch collection jobs with bounded concurrency, durable status, progress, retry, cancellation, error records, and event history.
+- Store notes, typed entities, aliases, confidence and verification state, relationships, timelines, bookmarks, comments, intelligence records, tags, locations, source provenance, and audit history in SQLite/WAL.
 - Ingest evidence into content-addressed managed storage, extract image/EXIF and file metadata, calculate SHA-256, verify integrity, and export manifests.
 - Search across investigations, notes, entities, evidence metadata, timelines, bookmarks, and collector results with SQLite FTS5.
+- Generate conservative, explainable entity-correlation suggestions; an investigator must accept a suggestion before it becomes an unverified relationship.
+- Explore interactive relationship graphs and an offline geospatial observation map without leaking case coordinates to a tile provider.
+- Merge duplicate entities while retaining aliases, relationships, locations, timeline references, confidence, and audit provenance.
 - Export reports as PDF, HTML, DOCX, Markdown, CSV, JSON, or text.
-- Run DNS/WHOIS/RDAP, email and phone analysis, website/TLS fingerprinting, certificate transparency, GeoIP/ASN, GitHub, Steam, Discord invite, Bluesky, Mastodon, GLEIF company, GDELT news, Wayback Machine, HIBP, VirusTotal, and local file-analysis collectors.
+- Export and import integrity-checked `.argus` investigation bundles containing records and verified evidence bytes, with ZIP traversal and decompression-bomb defenses.
+- Run DNS/WHOIS/RDAP, email and phone analysis, website/TLS fingerprinting, certificate transparency, GeoIP/ASN, GitHub, Steam, Discord invite, Bluesky, Mastodon, GLEIF company, GDELT news, Wayback Machine, HIBP, VirusTotal, local file analysis, and explicitly unverified cross-platform username correlation.
 - Keep API keys in Windows Credential Manager (or the native credential backend on other platforms).
 - Discover, enable, disable, atomically install, and remove versioned plugins. Plugins execute out-of-process over JSON-RPC.
 - Switch dark/light themes, rearrange dock panels, filter/sort tables, use keyboard shortcuts, drag files in as evidence, and switch workspaces.
@@ -32,6 +37,10 @@ On first launch, Argus creates a workspace in the platform-specific user-data di
 The workspace contains `argus.sqlite3`, managed `evidence/`, and optional `plugins/`. Database writes use transactions, foreign keys, WAL journaling, constraints, and audit records. Evidence is copied via a temporary file and accepted only after its hash matches the source.
 
 Installed plugins are not automatically trusted. Argus validates archive paths and checks declared permissions and optional entrypoint checksums, then invokes plugins in an isolated Python subprocess. Declared permissions are informative on platforms without an OS sandbox; inspect third-party plugin code before enabling it.
+
+Checksums in an investigation bundle detect corruption but do not establish who created the bundle. Establish authenticity through a separately trusted signature or transport channel.
+
+See [Architecture](docs/ARCHITECTURE.md) for the component and data-flow design.
 
 ## Tests
 

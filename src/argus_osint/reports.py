@@ -28,6 +28,11 @@ class ReportEngine:
                     "timeline_events",
                     "intelligence",
                     "audit_log",
+                    "source_records",
+                    "comments",
+                    "locations",
+                    "collection_jobs",
+                    "correlation_suggestions",
                 )
             },
         }
@@ -65,6 +70,11 @@ class ReportEngine:
                 ("Intelligence", "intelligence"),
                 ("Notes", "notes"),
                 ("Bookmarks", "bookmarks"),
+                ("Source provenance", "source_records"),
+                ("Locations", "locations"),
+                ("Investigator comments", "comments"),
+                ("Collection jobs", "collection_jobs"),
+                ("Correlation review", "correlation_suggestions"),
                 ("Audit trail", "audit_log"),
             )
         ]
