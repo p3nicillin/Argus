@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "argus-osint"
+version = "0.1.0"
+description = "Lawful, case-centric OSINT desktop workstation"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Argus OSINT contributors"}]
+dependencies = [
+  "PySide6>=6.8",
+  "httpx[http2]>=0.28",
+  "platformdirs>=4.3",
+  "keyring>=25.6",
+  "Pillow>=11.0",
+  "dnspython>=2.7",
+  "python-whois>=0.9.5",
+  "python-docx>=1.1",
+  "reportlab>=4.2",
+  "phonenumbers>=9.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3", "pytest-cov>=6", "ruff>=0.9", "mypy>=1.14"]
+
+[project.scripts]
+argus-osint = "argus_osint.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/argus_osint"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = [
+  "E501", # Long SQL, stylesheet, and export-template literals are clearer intact.
+  "E701", # Compact guard clauses are used throughout Qt event handlers.
+  "E702", # Related Qt widget setup statements are intentionally grouped.
+  "B008", # Qt requires QModelIndex() defaults in model method overrides.
+]
