@@ -875,6 +875,151 @@ class HackerNewsCollector:
         ]
 
 
+class RedditCollector:
+    id, name = "reddit", "Reddit profile"
+    description, query_hint = (
+        "Public Reddit account profile, karma and account age",
+        "username",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        username = query.strip().lstrip("@").removeprefix("u/").removeprefix("/u/")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{3,20}", username):
+            raise ValueError("Enter a valid Reddit username")
+        try:
+            data = await context.get_json(
+                f"https://www.reddit.com/user/{quote(username)}/about.json",
+                headers={"User-Agent": "ArgusOSINT/1.0 (public-source research)"},
+                cache_ttl=900,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (403, 404):
+                data = {}
+            else:
+                raise
+        profile = (data or {}).get("data") or {}
+        found = bool(profile)
+        return [
+            Finding(
+                f"Reddit: u/{username}",
+                f"https://www.reddit.com/user/{username}",
+                {"found": found, "profile": profile},
+                confidence=0.5 if found else 0.2,
+                entities=[{"kind": "username", "value": username, "verified": found}],
+            )
+        ]
+
+
+class GitLabCollector:
+    id, name = "gitlab", "GitLab profile"
+    description, query_hint = (
+        "Public GitLab user account and projects",
+        "username",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        username = query.strip().lstrip("@")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,255}", username):
+            raise ValueError("Enter a valid GitLab username")
+        users = await context.get_json(
+            f"https://gitlab.com/api/v4/users?username={quote(username)}",
+            cache_ttl=900,
+        )
+        if not users:
+            return [
+                Finding(
+                    f"GitLab: {username}",
+                    f"https://gitlab.com/{username}",
+                    {"found": False},
+                    confidence=0.2,
+                    entities=[{"kind": "username", "value": username, "verified": False}],
+                )
+            ]
+        user = users[0]
+        projects = await context.get_json(
+            f"https://gitlab.com/api/v4/users/{user['id']}/projects?per_page=100",
+            cache_ttl=900,
+        )
+        return [
+            Finding(
+                f"GitLab: {user.get('username', username)}",
+                user.get("web_url", f"https://gitlab.com/{username}"),
+                {"found": True, "profile": user, "projects": projects},
+                entities=[{
+                    "kind": "username",
+                    "value": user.get("username", username),
+                    "display_name": user.get("name", ""),
+                    "verified": True,
+                }],
+            )
+        ]
+
+
+class PackageRegistryCollector:
+    id, name = "package_registry", "Package registry (PyPI/npm)"
+    description, query_hint = (
+        "Public package metadata and maintainers on PyPI and npm",
+        "package name",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        pkg = query.strip()
+        if not re.fullmatch(r"[A-Za-z0-9._@/-]{1,120}", pkg):
+            raise ValueError("Enter a valid package name")
+        findings: list[Finding] = []
+
+        try:
+            data = await context.get_json(
+                f"https://pypi.org/pypi/{quote(pkg)}/json", cache_ttl=3600
+            )
+            info = (data or {}).get("info") or {}
+            if info:
+                findings.append(Finding(
+                    f"PyPI: {info.get('name', pkg)}",
+                    f"https://pypi.org/project/{pkg}/",
+                    {"registry": "pypi", "info": info},
+                    confidence=0.6,
+                    entities=self._people(info.get("author"), info.get("author_email")),
+                ))
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+
+        try:
+            data = await context.get_json(
+                f"https://registry.npmjs.org/{quote(pkg, safe='@/')}", cache_ttl=3600
+            )
+            if data and not data.get("error") and data.get("name"):
+                author = data.get("author") if isinstance(data.get("author"), dict) else {}
+                findings.append(Finding(
+                    f"npm: {data.get('name', pkg)}",
+                    f"https://www.npmjs.com/package/{pkg}",
+                    {"registry": "npm", "name": data.get("name"),
+                     "description": data.get("description"),
+                     "maintainers": data.get("maintainers"), "author": author},
+                    confidence=0.6,
+                    entities=self._people(author.get("name"), author.get("email")),
+                ))
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+
+        if not findings:
+            findings.append(Finding(
+                f"Package not found: {pkg}", "", {"found": False}, confidence=0.1
+            ))
+        return findings
+
+    @staticmethod
+    def _people(name: str | None, email: str | None) -> list[dict[str, Any]]:
+        entities: list[dict[str, Any]] = []
+        if name:
+            entities.append({"kind": "person", "value": name, "verified": False})
+        if email:
+            entities.append({"kind": "email", "value": email, "verified": False})
+        return entities
+
+
 class FileCollector:
     id, name = "file", "File metadata & hashes"
     description, query_hint = (
@@ -1263,6 +1408,9 @@ class CollectorRegistry:
             GravatarCollector(),
             KeybaseCollector(),
             HackerNewsCollector(),
+            RedditCollector(),
+            GitLabCollector(),
+            PackageRegistryCollector(),
             FileCollector(),
             MalwareHashCollector(),
         ):

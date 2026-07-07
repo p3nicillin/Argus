@@ -13,9 +13,12 @@ import pytest
 from argus_osint.collectors import (
     BreachCollector,
     CollectorRegistry,
+    GitLabCollector,
     GravatarCollector,
     HackerNewsCollector,
     KeybaseCollector,
+    PackageRegistryCollector,
+    RedditCollector,
 )
 
 
@@ -44,7 +47,8 @@ def _run(coro):
 
 def test_all_new_collectors_registered():
     ids = {c.id for c in CollectorRegistry().all()}
-    for expected in {"data_broker", "gravatar", "keybase", "hackernews"}:
+    for expected in {"data_broker", "gravatar", "keybase", "hackernews",
+                     "reddit", "gitlab", "package_registry"}:
         assert expected in ids
 
 
@@ -129,3 +133,61 @@ def test_breach_uses_hibp_when_key_present():
     f = _run(BreachCollector().collect("x@example.com", ctx))[0]
     assert any("haveibeenpwned" in u for u in ctx.requested)
     assert ("company", "LinkedIn") in {(e["kind"], e["value"]) for e in f.entities}
+
+
+def test_reddit_found_and_missing():
+    ctx = FakeContext({"about.json": {"data": {"name": "spez", "total_karma": 500000,
+                                               "created_utc": 1118030400}}})
+    f = _run(RedditCollector().collect("u/spez", ctx))[0]
+    assert f.data["found"] is True
+    assert f.entities[0] == {"kind": "username", "value": "spez", "verified": True}
+
+    empty = _run(RedditCollector().collect("ghost_user", FakeContext({"about.json": {}})))[0]
+    assert empty.data["found"] is False
+    assert empty.entities[0]["verified"] is False
+
+
+def test_reddit_rejects_bad_username():
+    with pytest.raises(ValueError):
+        _run(RedditCollector().collect("a", FakeContext()))  # too short
+
+
+def test_gitlab_profile_and_projects():
+    ctx = FakeContext({
+        "/users?username=": [{"id": 42, "username": "torvalds", "name": "Linus",
+                              "web_url": "https://gitlab.com/torvalds"}],
+        "/users/42/projects": [{"name": "proj1"}, {"name": "proj2"}],
+    })
+    f = _run(GitLabCollector().collect("torvalds", ctx))[0]
+    assert f.data["found"] is True
+    assert len(f.data["projects"]) == 2
+    assert f.entities[0] == {"kind": "username", "value": "torvalds",
+                             "display_name": "Linus", "verified": True}
+
+
+def test_gitlab_missing_user():
+    f = _run(GitLabCollector().collect("nobody", FakeContext({"/users?username=": []})))[0]
+    assert f.data["found"] is False
+    assert f.entities[0]["verified"] is False
+
+
+def test_package_registry_pypi_and_npm():
+    ctx = FakeContext({
+        "pypi.org": {"info": {"name": "requests", "author": "Kenneth Reitz",
+                              "author_email": "me@kennethreitz.org"}},
+        "registry.npmjs.org": {"name": "express", "description": "web framework",
+                               "author": {"name": "TJ", "email": "tj@example.com"}},
+    })
+    findings = _run(PackageRegistryCollector().collect("requests", ctx))
+    titles = {f.title for f in findings}
+    assert any(t.startswith("PyPI:") for t in titles)
+    assert any(t.startswith("npm:") for t in titles)
+    all_entities = {(e["kind"], e["value"]) for f in findings for e in f.entities}
+    assert ("person", "Kenneth Reitz") in all_entities
+    assert ("email", "tj@example.com") in all_entities
+
+
+def test_package_registry_not_found():
+    findings = _run(PackageRegistryCollector().collect("zzz-nonexistent", FakeContext()))
+    assert len(findings) == 1
+    assert findings[0].data["found"] is False
