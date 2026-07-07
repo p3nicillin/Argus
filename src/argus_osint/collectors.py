@@ -15,6 +15,7 @@ from urllib.parse import quote, urljoin, urlparse
 
 import httpx
 
+from . import databrokers
 from .config import SecretStore, Settings
 from .db import Database
 from .evidence import extract_metadata
@@ -644,9 +645,10 @@ class DiscordInviteCollector:
 
 
 class BreachCollector:
-    id, name = "breach", "Have I Been Pwned"
+    id, name = "breach", "Breach exposure"
     description, query_hint = (
-        "Lawful breach exposure check using the official HIBP API",
+        "Lawful breach exposure check. Uses the free XposedOrNot service by "
+        "default; uses the official HIBP API automatically when a key is set.",
         "name@example.com",
     )
 
@@ -655,11 +657,24 @@ class BreachCollector:
         if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
             raise ValueError("Enter a valid email address")
         key = context.secret("hibp_api_key")
-        if not key:
-            raise RuntimeError("Add hibp_api_key in Settings; HIBP's official API requires a key")
+        if key:
+            breaches, source = await self._hibp(email, key, context), "https://haveibeenpwned.com/"
+        else:
+            breaches, source = await self._xposedornot(email, context), "https://xposedornot.com/"
+        return [
+            Finding(
+                f"Breach exposure: {email}",
+                source,
+                {"email": email, "breaches": breaches, "count": len(breaches)},
+                entities=[{"kind": "email", "value": email, "verified": False}],
+            )
+        ]
+
+    @staticmethod
+    async def _hibp(email: str, key: str, context: CollectorContext) -> list:
         url = f"https://haveibeenpwned.com/api/v3/breachedaccount/{quote(email)}"
         try:
-            data = await context.get_json(
+            return await context.get_json(
                 url,
                 headers={"hibp-api-key": key},
                 params={"truncateResponse": "false"},
@@ -667,15 +682,59 @@ class BreachCollector:
             )
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code == 404:
-                data = []
-            else:
-                raise
+                return []
+            raise
+
+    @staticmethod
+    async def _xposedornot(email: str, context: CollectorContext) -> list:
+        # Free, no API key. 404 = the address is not in any known breach.
+        url = f"https://api.xposedornot.com/v1/breach-analytics?email={quote(email)}"
+        try:
+            data = await context.get_json(url, cache_ttl=3600)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return []
+            raise
+        details = ((data or {}).get("ExposedBreaches") or {}).get("breaches_details") or []
+        return [
+            {
+                "Name": d.get("breach", ""),
+                "Title": d.get("breach", ""),
+                "Domain": d.get("domain", ""),
+                "BreachDate": str(d.get("xposed_date", "")),
+                "PwnCount": d.get("xposed_records", 0),
+                "DataClasses": [x.strip() for x in
+                                str(d.get("xposed_data", "")).split(";") if x.strip()],
+                "Description": d.get("details", ""),
+                "IsVerified": str(d.get("verified", "")).lower() == "true",
+            }
+            for d in details
+        ]
+
+
+class DataBrokerCollector:
+    id, name = "data_broker", "Data broker exposure"
+    description, query_hint = (
+        "People-search and data-broker sites that may list the subject. Each "
+        "result is an unverified lead for public-records review, not a match.",
+        "Full name or email",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        leads = databrokers.candidate_links(query)
+        subject = query.strip()
+        entity_kind = "email" if "@" in subject else "person"
         return [
             Finding(
-                f"Breach exposure: {email}",
-                "https://haveibeenpwned.com/",
-                {"email": email, "breaches": data, "count": len(data)},
-                entities=[{"kind": "email", "value": email, "verified": False}],
+                f"Data-broker candidates: {subject}",
+                "",
+                {
+                    "warning": "A listing on these sites does not establish that a "
+                               "record belongs to the subject; review each source.",
+                    "candidates": leads,
+                },
+                confidence=0.2,
+                entities=[{"kind": entity_kind, "value": subject, "verified": False}],
             )
         ]
 
@@ -1064,6 +1123,7 @@ class CollectorRegistry:
             NewsCollector(),
             WaybackCollector(),
             BreachCollector(),
+            DataBrokerCollector(),
             FileCollector(),
             MalwareHashCollector(),
         ):
