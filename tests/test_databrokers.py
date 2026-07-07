@@ -12,7 +12,9 @@ from argus_osint.collectors import CollectorRegistry, DataBrokerCollector
 
 def test_candidate_links_for_name():
     leads = databrokers.candidate_links("Luke McClellan")
-    assert len(leads) == len(databrokers.BROKERS)
+    searchable = [b for b in databrokers.BROKERS if b.search_url]
+    assert len(leads) == len(searchable)
+    assert len(leads) >= 20  # registry expanded to a useful breadth
     spokeo = next(l for l in leads if l["broker"] == "Spokeo")
     assert spokeo["search_url"] == "https://www.spokeo.com/Luke+McClellan"
     # every lead is explicitly an unverified candidate
@@ -41,5 +43,5 @@ def test_collector_registered_and_shaped():
     f = findings[0]
     assert f.confidence == 0.2  # unverified leads, like username correlation
     assert f.entities[0] == {"kind": "person", "value": "Luke McClellan", "verified": False}
-    assert len(f.data["candidates"]) == len(databrokers.BROKERS)
+    assert len(f.data["candidates"]) == len([b for b in databrokers.BROKERS if b.search_url])
     assert "warning" in f.data

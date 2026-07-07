@@ -67,6 +67,27 @@ BROKERS: tuple[Broker, ...] = (
            "https://nuwber.com/search?name={q}"),
     Broker("peekyou", "PeekYou", "people-search", "https://www.peekyou.com",
            "https://www.peekyou.com/{q}"),
+    Broker("thatsthem", "ThatsThem", "people-search", "https://thatsthem.com",
+           "https://thatsthem.com/name/{q}"),
+    Broker("zabasearch", "ZabaSearch", "people-search", "https://www.zabasearch.com",
+           "https://www.zabasearch.com/people/{q}/"),
+    Broker("ussearch", "US Search", "background-check", "https://www.ussearch.com",
+           "https://www.ussearch.com/name/{q}/"),
+    Broker("anywho", "AnyWho", "people-search", "https://www.anywho.com",
+           "https://www.anywho.com/people/{q}/"),
+    Broker("cyberbackgroundchecks", "CyberBackgroundChecks", "background-check",
+           "https://www.cyberbackgroundchecks.com",
+           "https://www.cyberbackgroundchecks.com/people/{q}"),
+    Broker("advancedbackgroundchecks", "Advanced Background Checks", "background-check",
+           "https://www.advancedbackgroundchecks.com",
+           "https://www.advancedbackgroundchecks.com/names/{q}"),
+    Broker("peoplelooker", "PeopleLooker", "people-search",
+           "https://www.peoplelooker.com",
+           "https://www.peoplelooker.com/f/name/{q}"),
+    Broker("truthfinder", "TruthFinder", "background-check", "https://www.truthfinder.com",
+           "https://www.truthfinder.com/results/?fn={q}"),
+    Broker("ukphonebook", "UKPhonebook", "people-search", "https://www.ukphonebook.com",
+           "https://www.ukphonebook.com/search/people?name={q}"),
 )
 
 
@@ -90,6 +111,8 @@ def candidate_links(query: str) -> list[dict]:
 
     leads = []
     for b in BROKERS:
+        if not b.search_url:
+            continue  # no public search surface -> not an actionable lead
         leads.append({
             "broker": b.name,
             "category": b.category,
