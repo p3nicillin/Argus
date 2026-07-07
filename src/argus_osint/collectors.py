@@ -666,9 +666,28 @@ class BreachCollector:
                 f"Breach exposure: {email}",
                 source,
                 {"email": email, "breaches": breaches, "count": len(breaches)},
-                entities=[{"kind": "email", "value": email, "verified": False}],
+                entities=self._entities(email, breaches),
             )
         ]
+
+    @staticmethod
+    def _entities(email: str, breaches: list) -> list[dict[str, Any]]:
+        # The email plus the breached companies/domains, so correlation can link
+        # a subject to the organisations that exposed their data.
+        entities: list[dict[str, Any]] = [
+            {"kind": "email", "value": email, "verified": False}
+        ]
+        seen: set[tuple[str, str]] = set()
+        for breach in breaches:
+            name = breach.get("Name") or breach.get("Title")
+            if name and ("company", name) not in seen:
+                seen.add(("company", name))
+                entities.append({"kind": "company", "value": name, "verified": False})
+            domain = breach.get("Domain")
+            if domain and ("domain", domain) not in seen:
+                seen.add(("domain", domain))
+                entities.append({"kind": "domain", "value": domain, "verified": False})
+        return entities
 
     @staticmethod
     async def _hibp(email: str, key: str, context: CollectorContext) -> list:
@@ -735,6 +754,123 @@ class DataBrokerCollector:
                 },
                 confidence=0.2,
                 entities=[{"kind": entity_kind, "value": subject, "verified": False}],
+            )
+        ]
+
+
+class GravatarCollector:
+    id, name = "gravatar", "Gravatar profile"
+    description, query_hint = (
+        "Public Gravatar avatar and self-declared profile linked to an email hash",
+        "name@example.com",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        email = query.strip().lower()
+        if not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+            raise ValueError("Enter a valid email address")
+        digest = hashlib.md5(email.encode("utf-8")).hexdigest()  # noqa: S324 (gravatar id, not security)
+        avatar = f"https://www.gravatar.com/avatar/{digest}?d=404"
+        try:
+            profile = await context.get_json(
+                f"https://www.gravatar.com/{digest}.json", cache_ttl=3600
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                profile = None
+            else:
+                raise
+        entries = (profile or {}).get("entry") or []
+        entry = entries[0] if entries else None
+        entities: list[dict[str, Any]] = [
+            {"kind": "email", "value": email, "verified": False}
+        ]
+        for account in (entry or {}).get("accounts", []) or []:
+            handle = account.get("username") or account.get("display")
+            if handle:
+                entities.append({
+                    "kind": "username", "value": handle,
+                    "display_name": account.get("shortname", ""), "verified": False,
+                })
+        return [
+            Finding(
+                f"Gravatar: {email}",
+                f"https://gravatar.com/{digest}",
+                {"email_md5": digest, "avatar_url": avatar,
+                 "exists": bool(entry), "profile": entry},
+                confidence=0.5 if entry else 0.2,
+                entities=entities,
+            )
+        ]
+
+
+class KeybaseCollector:
+    id, name = "keybase", "Keybase profile"
+    description, query_hint = (
+        "Public Keybase identity, proofs and linked accounts",
+        "username",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        username = query.strip().lstrip("@")
+        if not re.fullmatch(r"[A-Za-z0-9_]{1,50}", username):
+            raise ValueError("Enter a valid Keybase username")
+        data = await context.get_json(
+            f"https://keybase.io/_/api/1.0/user/lookup.json?usernames={quote(username)}",
+            cache_ttl=900,
+        )
+        them = (data or {}).get("them") or []
+        who = them[0] if them else None
+        entities: list[dict[str, Any]] = [
+            {"kind": "username", "value": username, "verified": bool(who)}
+        ]
+        proofs = []
+        for proof in ((who or {}).get("proofs_summary", {}) or {}).get("all", []) or []:
+            proofs.append({
+                "platform": proof.get("proof_type"),
+                "handle": proof.get("nametag"),
+                "url": proof.get("service_url"),
+            })
+            if proof.get("nametag"):
+                entities.append({
+                    "kind": "username", "value": proof["nametag"],
+                    "display_name": proof.get("proof_type", ""), "verified": False,
+                })
+        return [
+            Finding(
+                f"Keybase: {username}",
+                f"https://keybase.io/{username}",
+                {"found": bool(who), "basics": (who or {}).get("basics"),
+                 "proofs": proofs},
+                confidence=0.6 if who else 0.2,
+                entities=entities,
+            )
+        ]
+
+
+class HackerNewsCollector:
+    id, name = "hackernews", "Hacker News profile"
+    description, query_hint = (
+        "Public Hacker News user profile, karma and account age",
+        "username",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        username = query.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]{2,15}", username):
+            raise ValueError("Enter a valid Hacker News username")
+        data = await context.get_json(
+            f"https://hacker-news.firebaseio.com/v0/user/{quote(username)}.json",
+            cache_ttl=900,
+        )
+        found = bool(data)
+        return [
+            Finding(
+                f"Hacker News: {username}",
+                f"https://news.ycombinator.com/user?id={quote(username)}",
+                {"found": found, "profile": data or {}},
+                confidence=0.5 if found else 0.2,
+                entities=[{"kind": "username", "value": username, "verified": found}],
             )
         ]
 
@@ -1124,6 +1260,9 @@ class CollectorRegistry:
             WaybackCollector(),
             BreachCollector(),
             DataBrokerCollector(),
+            GravatarCollector(),
+            KeybaseCollector(),
+            HackerNewsCollector(),
             FileCollector(),
             MalwareHashCollector(),
         ):
