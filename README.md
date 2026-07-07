@@ -27,7 +27,8 @@ On first launch, Argus creates a workspace in the platform-specific user-data di
 - Merge duplicate entities while retaining aliases, relationships, locations, timeline references, confidence, and audit provenance.
 - Export reports as PDF, HTML, DOCX, Markdown, CSV, JSON, or text.
 - Export and import integrity-checked `.argus` investigation bundles containing records and verified evidence bytes, with ZIP traversal and decompression-bomb defenses.
-- Run DNS/WHOIS/RDAP, email and phone analysis, website/TLS fingerprinting, certificate transparency, GeoIP/ASN, GitHub, Steam, Discord invite, Bluesky, Mastodon, GLEIF company, GDELT news, Wayback Machine, HIBP, VirusTotal, local file analysis, and explicitly unverified cross-platform username correlation.
+- Run DNS/WHOIS/RDAP, email and phone analysis, website/TLS fingerprinting, certificate transparency, GeoIP/ASN, GitHub, Gravatar, Keybase, Hacker News, Steam, Discord invite, Bluesky, Mastodon, GLEIF company, GDELT news, Wayback Machine, breach exposure (free by default via XposedOrNot, HIBP when a key is set), VirusTotal, local file analysis, and explicitly unverified cross-platform username and data-broker correlation.
+- Breach findings surface the exposed organisations as company and domain entities, so correlation can link a subject to the sources that leaked their data.
 - Keep API keys in Windows Credential Manager (or the native credential backend on other platforms).
 - Discover, enable, disable, atomically install, and remove versioned plugins. Plugins execute out-of-process over JSON-RPC.
 - Switch dark/light themes, rearrange dock panels, filter/sort tables, use keyboard shortcuts, drag files in as evidence, and switch workspaces.
