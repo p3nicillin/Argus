@@ -46,6 +46,10 @@ Failures remain attached to their jobs and can be retried. A successful retry is
 
 `security.py` builds security-research briefs from records already admitted into an investigation. The brief builder ranks CVEs, exposed public services, breach exposure, and disclosure gaps from archived intelligence; every risk item preserves its reasons and source URLs. `reports.py` can export these briefs separately from full case reports for quick triage handoff.
 
+## Free social-source boundary
+
+Social collectors must remain free to run and must use either public endpoints/feeds or generated public profile URLs. Platforms with reliable free public endpoints can produce live findings; platforms that require login, paid API access, or restrictive developer approval are represented as explicitly unverified review leads. Matching social handles are never treated as identity proof by themselves.
+
 ## Trust semantics
 
 Argus distinguishes these concepts throughout the model:

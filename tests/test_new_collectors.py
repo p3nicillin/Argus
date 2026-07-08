@@ -26,7 +26,9 @@ from argus_osint.collectors import (
     RobotsSitemapCollector,
     SecurityTxtCollector,
     ShodanInternetDBCollector,
+    SocialProfileCollector,
     UrlscanCollector,
+    YouTubeCollector,
 )
 
 
@@ -82,7 +84,7 @@ def test_all_new_collectors_registered():
     for expected in {"data_broker", "gravatar", "keybase", "hackernews",
                      "reddit", "gitlab", "package_registry", "security_txt",
                      "robots_sitemap", "nvd_cve", "cisa_kev", "epss",
-                     "shodan_internetdb", "urlscan"}:
+                     "shodan_internetdb", "urlscan", "social_profiles", "youtube"}:
         assert expected in ids
 
 
@@ -347,3 +349,40 @@ def test_urlscan_search_extracts_page_entities():
     assert ("ip", "93.184.216.34") in entities
     assert ("url", "https://example.org/login") in entities
     assert ("urlscan_uuid", "scan-uuid") in entities
+
+
+def test_social_profile_leads_are_free_and_unverified():
+    f = _run(SocialProfileCollector().collect("alice", FakeContext()))[0]
+    assert f.data["cost"] == "free"
+    assert f.data["requires_api_key"] is False
+    platforms = {item["platform"] for item in f.data["candidates"]}
+    assert {"X", "Instagram", "TikTok", "YouTube", "LinkedIn", "Telegram"} <= platforms
+    assert all(item["identity_match"] is False for item in f.data["candidates"])
+    assert f.entities[0] == {"kind": "username", "value": "alice", "verified": False}
+
+
+def test_youtube_resolves_handle_and_reads_public_feed():
+    feed = """<?xml version="1.0" encoding="UTF-8"?>
+    <feed xmlns="http://www.w3.org/2005/Atom" xmlns:yt="http://www.youtube.com/xml/schemas/2015">
+      <title>Alice Channel</title>
+      <author><name>Alice</name></author>
+      <entry>
+        <yt:videoId>video123</yt:videoId>
+        <title>Launch notes</title>
+        <published>2026-07-08T00:00:00+00:00</published>
+        <updated>2026-07-08T00:00:00+00:00</updated>
+        <link rel="alternate" href="https://www.youtube.com/watch?v=video123" />
+      </entry>
+    </feed>"""
+    ctx = FakeContext({
+        "@alice": {"__text__": '{"channelId":"UCabc12345678901234567890"}'},
+        "feeds/videos.xml": {"__text__": feed},
+    })
+    f = _run(YouTubeCollector().collect("@alice", ctx))[0]
+    assert f.data["cost"] == "free"
+    assert f.data["requires_api_key"] is False
+    assert f.data["channel_id"] == "UCabc12345678901234567890"
+    assert f.data["entries"][0]["video_id"] == "video123"
+    assert ("youtube_channel", "UCabc12345678901234567890") in {
+        (entity["kind"], entity["value"]) for entity in f.entities
+    }

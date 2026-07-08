@@ -79,7 +79,9 @@ class CampaignPlanner:
         elif entity_kind == "username":
             handle = seed.lstrip("@")
             requests.extend([
+                self._request("social_profiles", handle, "Generate free social profile leads"),
                 self._request("username_correlation", handle, "Generate unverified handle leads"),
+                self._request("youtube", handle, "Collect public YouTube channel data if resolvable"),
                 self._request("github", handle, "Collect public GitHub account data"),
                 self._request("gitlab", handle, "Collect public GitLab account data"),
                 self._request("reddit", handle, "Collect public Reddit account data"),

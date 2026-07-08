@@ -22,6 +22,38 @@ from .db import Database
 from .evidence import extract_metadata
 from .repository import now
 
+SOCIAL_PROFILE_PLATFORMS: dict[str, str] = {
+    "X": "https://x.com/{name}",
+    "Facebook": "https://www.facebook.com/{name}",
+    "Instagram": "https://www.instagram.com/{name}/",
+    "Threads": "https://www.threads.net/@{name}",
+    "TikTok": "https://www.tiktok.com/@{name}",
+    "YouTube": "https://www.youtube.com/@{name}",
+    "LinkedIn": "https://www.linkedin.com/in/{name}/",
+    "Reddit": "https://www.reddit.com/user/{name}/",
+    "Bluesky": "https://bsky.app/profile/{name}",
+    "Mastodon": "https://mastodon.social/@{name}",
+    "GitHub": "https://github.com/{name}",
+    "GitLab": "https://gitlab.com/{name}",
+    "Keybase": "https://keybase.io/{name}",
+    "Twitch": "https://www.twitch.tv/{name}",
+    "Telegram": "https://t.me/{name}",
+    "Pinterest": "https://www.pinterest.com/{name}/",
+    "Snapchat": "https://www.snapchat.com/add/{name}",
+    "Medium": "https://medium.com/@{name}",
+    "Substack": "https://{name}.substack.com/",
+    "Tumblr": "https://{name}.tumblr.com/",
+    "Flickr": "https://www.flickr.com/people/{name}/",
+    "SoundCloud": "https://soundcloud.com/{name}",
+    "Vimeo": "https://vimeo.com/{name}",
+    "Patreon": "https://www.patreon.com/{name}",
+    "Linktree": "https://linktr.ee/{name}",
+    "Beacons": "https://beacons.ai/{name}",
+    "Buy Me a Coffee": "https://www.buymeacoffee.com/{name}",
+    "Product Hunt": "https://www.producthunt.com/@{name}",
+    "Stack Overflow": "https://stackoverflow.com/users/{name}",
+}
+
 
 def _ensure_public_host(host: str, port: int = 443) -> None:
     results = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
@@ -906,21 +938,7 @@ class UsernameCorrelationCollector:
         "Builds cross-platform candidates without claiming matching names share an identity",
         "username",
     )
-    templates = {
-        "X": "https://x.com/{name}",
-        "Facebook": "https://www.facebook.com/{name}",
-        "Instagram": "https://www.instagram.com/{name}/",
-        "Reddit": "https://www.reddit.com/user/{name}/",
-        "TikTok": "https://www.tiktok.com/@{name}",
-        "YouTube": "https://www.youtube.com/@{name}",
-        "LinkedIn": "https://www.linkedin.com/in/{name}/",
-        "GitHub": "https://github.com/{name}",
-        "Twitch": "https://www.twitch.tv/{name}",
-        "Telegram": "https://t.me/{name}",
-        "Bluesky": "https://bsky.app/profile/{name}",
-        "Pinterest": "https://www.pinterest.com/{name}/",
-        "Snapchat": "https://www.snapchat.com/add/{name}",
-    }
+    templates = SOCIAL_PROFILE_PLATFORMS
 
     async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
         username = query.strip().lstrip("@").rstrip("/")
@@ -947,6 +965,199 @@ class UsernameCorrelationCollector:
                 entities=[{"kind": "username", "value": username, "verified": False}],
             )
         ]
+
+
+class SocialProfileCollector:
+    id, name = "social_profiles", "Social profile leads"
+    description, query_hint = (
+        "Free, keyless cross-platform social profile URLs. These are unverified leads only.",
+        "username",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        username = query.strip().lstrip("@").rstrip("/")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", username):
+            raise ValueError("Enter a syntactically valid username")
+        candidates = [
+            {
+                "platform": platform,
+                "url": template.format(name=quote(username)),
+                "status": "unverified candidate",
+                "identity_match": False,
+                "access": "free public URL",
+            }
+            for platform, template in SOCIAL_PROFILE_PLATFORMS.items()
+        ]
+        return [
+            Finding(
+                f"Social profile leads: {username}",
+                "",
+                {
+                    "warning": "Profile URLs are review leads only; matching handles do not prove identity.",
+                    "cost": "free",
+                    "requires_api_key": False,
+                    "platform_count": len(candidates),
+                    "candidates": candidates,
+                },
+                confidence=0.2,
+                entities=[{"kind": "username", "value": username, "verified": False}],
+            )
+        ]
+
+
+class YouTubeCollector:
+    id, name = "youtube", "YouTube public channel"
+    description, query_hint = (
+        "Free public YouTube channel metadata and recent uploads via channel page and RSS",
+        "@handle, channel URL, or UC... channel ID",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        value = query.strip().rstrip("/")
+        if not value:
+            raise ValueError("Enter a YouTube handle, channel URL, or channel ID")
+        channel_id, handle, source_url = await self._resolve(value, context)
+        if not channel_id:
+            return [
+                Finding(
+                    f"YouTube: {handle or value}",
+                    source_url,
+                    {
+                        "found": False,
+                        "input": value,
+                        "handle": handle,
+                        "cost": "free",
+                        "requires_api_key": False,
+                        "note": "Could not resolve a public channel ID without the YouTube Data API.",
+                    },
+                    confidence=0.2,
+                    entities=[{"kind": "username", "value": handle or value, "verified": False}],
+                )
+            ]
+        feed_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={quote(channel_id)}"
+        try:
+            response = await context.request(
+                "GET",
+                feed_url,
+                headers={"Accept": "application/atom+xml,application/xml,text/xml,*/*"},
+                cache_ttl=900,
+            )
+            feed = self._feed(response.text)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                feed = {"found": False, "entries": []}
+            else:
+                raise
+        title = feed.get("title") or handle or channel_id
+        entities = [
+            {
+                "kind": "youtube_channel",
+                "value": channel_id,
+                "display_name": str(title),
+                "verified": bool(feed.get("found", True)),
+            }
+        ]
+        if handle:
+            entities.append({"kind": "username", "value": handle, "verified": False})
+        return [
+            Finding(
+                f"YouTube: {title}",
+                source_url or f"https://www.youtube.com/channel/{channel_id}",
+                {
+                    "found": bool(feed.get("found", True)),
+                    "channel_id": channel_id,
+                    "handle": handle,
+                    "feed_url": feed_url,
+                    "cost": "free",
+                    "requires_api_key": False,
+                    **feed,
+                },
+                confidence=0.6 if feed.get("found", True) else 0.2,
+                entities=entities,
+            )
+        ]
+
+    async def _resolve(
+        self, value: str, context: CollectorContext
+    ) -> tuple[str | None, str | None, str]:
+        parsed = urlparse(value if "://" in value else "")
+        path = parsed.path.strip("/") if parsed.hostname else ""
+        source_url = value if parsed.hostname else ""
+        if re.fullmatch(r"UC[A-Za-z0-9_-]{20,}", value):
+            return value, None, f"https://www.youtube.com/channel/{value}"
+        if path.startswith("channel/"):
+            channel_id = path.split("/", 1)[1].split("/", 1)[0]
+            return channel_id, None, source_url
+        handle = ""
+        if value.startswith("@"):
+            handle = value[1:]
+            source_url = f"https://www.youtube.com/@{quote(handle)}"
+        elif path.startswith("@"):
+            handle = path[1:].split("/", 1)[0]
+        elif re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", value):
+            handle = value
+            source_url = f"https://www.youtube.com/@{quote(handle)}"
+        if not handle:
+            return None, None, source_url or value
+        try:
+            response = await context.request(
+                "GET",
+                source_url,
+                headers={"Accept": "text/html,*/*"},
+                cache_ttl=900,
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return None, handle, source_url
+            raise
+        patterns = [
+            r'"channelId"\s*:\s*"(UC[A-Za-z0-9_-]+)"',
+            r'"externalId"\s*:\s*"(UC[A-Za-z0-9_-]+)"',
+            r"youtube\.com/channel/(UC[A-Za-z0-9_-]+)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, response.text)
+            if match:
+                return match.group(1), handle, source_url
+        return None, handle, source_url
+
+    @staticmethod
+    def _feed(text: str) -> dict[str, Any]:
+        try:
+            root = ET.fromstring(text)
+        except ET.ParseError:
+            return {"found": False, "entries": []}
+
+        def name(element: ET.Element) -> str:
+            return element.tag.rsplit("}", 1)[-1]
+
+        def child_text(element: ET.Element, child_name: str) -> str:
+            for child in element:
+                if name(child) == child_name and child.text:
+                    return child.text.strip()
+            return ""
+
+        title = child_text(root, "title")
+        author = ""
+        for child in root:
+            if name(child) == "author":
+                author = child_text(child, "name")
+                break
+        entries: list[dict[str, Any]] = []
+        for entry in [child for child in root if name(child) == "entry"][:25]:
+            link = ""
+            for child in entry:
+                if name(child) == "link":
+                    link = child.attrib.get("href", "")
+                    break
+            entries.append({
+                "video_id": child_text(entry, "videoId"),
+                "title": child_text(entry, "title"),
+                "published": child_text(entry, "published"),
+                "updated": child_text(entry, "updated"),
+                "url": link,
+            })
+        return {"found": True, "title": title, "author": author, "entries": entries}
 
 
 class SteamCollector:
@@ -1825,6 +2036,8 @@ class CollectorRegistry:
             ShodanInternetDBCollector(),
             UrlscanCollector(),
             GitHubCollector(),
+            SocialProfileCollector(),
+            YouTubeCollector(),
             UsernameCorrelationCollector(),
             SteamCollector(),
             DiscordInviteCollector(),

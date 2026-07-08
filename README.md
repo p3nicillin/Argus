@@ -2,7 +2,7 @@
 
 Argus is a local-first, case-centric desktop system for lawful public-source research. It combines persistent collection operations, investigation management, evidence integrity, provenance, entity/link analysis, explainable correlation, geospatial review, full-text search, reporting, and API-backed collectors in a modern PySide6 interface.
 
-Argus does not bypass authentication or privacy controls. Its network modules use public pages and official APIs; services that require credentials read them from the operating-system credential vault.
+Argus does not bypass authentication or privacy controls. Its network modules use public pages, public feeds, and official APIs; services that require credentials read them from the operating-system credential vault. Argus is designed to be free to run locally with keyless collectors or free-tier/user-provided API keys; see [Free-use policy](docs/FREE_USE.md).
 
 ## Run
 
@@ -27,7 +27,7 @@ On first launch, Argus creates a workspace in the platform-specific user-data di
 - Merge duplicate entities while retaining aliases, relationships, locations, timeline references, confidence, and audit provenance.
 - Export reports as PDF, HTML, DOCX, Markdown, CSV, JSON, or text.
 - Export and import integrity-checked `.argus` investigation bundles containing records and verified evidence bytes, with ZIP traversal and decompression-bomb defenses.
-- Run DNS/WHOIS/RDAP, email and phone analysis, website/TLS fingerprinting, security.txt, robots.txt and sitemap discovery, certificate transparency, GeoIP/ASN, NVD CVE records, CISA Known Exploited Vulnerabilities, FIRST EPSS scoring, Shodan InternetDB exposure snapshots, urlscan.io public search, GitHub, GitLab, Gravatar, Keybase, Hacker News, Reddit, Steam, Discord invite, Bluesky, Mastodon, GLEIF company, GDELT news, Wayback Machine, package-registry (PyPI/npm) metadata, breach exposure (free by default via XposedOrNot, HIBP when a key is set), VirusTotal, local file analysis, and explicitly unverified cross-platform username and data-broker correlation.
+- Run DNS/WHOIS/RDAP, email and phone analysis, website/TLS fingerprinting, security.txt, robots.txt and sitemap discovery, certificate transparency, GeoIP/ASN, NVD CVE records, CISA Known Exploited Vulnerabilities, FIRST EPSS scoring, Shodan InternetDB exposure snapshots, urlscan.io public search, GitHub, GitLab, Gravatar, Keybase, Hacker News, Reddit, YouTube public channel RSS, broad social-profile leads, Steam, Discord invite, Bluesky, Mastodon, GLEIF company, GDELT news, Wayback Machine, package-registry (PyPI/npm) metadata, breach exposure (free by default via XposedOrNot, HIBP when a key is set), VirusTotal, local file analysis, and explicitly unverified cross-platform username and data-broker correlation.
 - Plan and run bounded security-research campaigns from domains, IPs, URLs, CVEs, emails, usernames, people, or organisations, expanding from archived entities through the normal queued operation pipeline.
 - Generate risk-prioritized security briefs that summarize collector coverage, source provenance, top security risks, and recommended next collection steps.
 - Breach findings surface the exposed organisations as company and domain entities, so correlation can link a subject to the sources that leaked their data.
