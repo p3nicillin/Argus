@@ -6,6 +6,9 @@ Argus is deliberately local-first. An investigation can contain sensitive workin
 
 - `db.py` owns SQLite connections, schema constraints, WAL configuration, and transactional access. Each worker receives a thread-local connection; shutdown waits for workers and closes every tracked connection.
 - `repository.py` is the only domain write surface used by the UI and services. It maintains audit records and the FTS5 index alongside case records.
+- `app_services.py` is the desktop composition root. It wires settings, SQLite, repository, collector registry, HTTP context, operations, campaign planning, reporting, universal search, dashboard, graph, timeline, enrichment, and security brief services.
+- `universal.py` normalizes mixed OSINT/security inputs into stable seed types and pairs local FTS search with bounded collection plans.
+- `workspace.py` provides read-model services for dashboard panels, relationship graphs, unified timelines, and entity enrichment profiles.
 - `collectors.py` contains bounded, lawful public-source adapters. Collectors return typed `Finding` values and do not write investigations directly.
 - `operations.py` persists jobs before execution, applies concurrency limits, records failures, normalizes entities, archives findings, hashes source payloads, extracts geospatial observations, and invokes correlation.
 - `correlation.py` creates explainable suggestions from conservative normalization keys. Suggestions never become relationships without an investigator decision.
@@ -13,7 +16,7 @@ Argus is deliberately local-first. An investigation can contain sensitive workin
 - `bundles.py` exports and imports portable case archives. Every included file is size- and SHA-256-checked; unsafe ZIP paths, duplicate paths, excessive expansion ratios, and oversized archives are rejected.
 - `reports.py` renders a consistent investigation snapshot into seven professional exchange formats.
 - `plugins.py` installs plugins atomically and invokes them in isolated Python subprocesses through a one-request JSON-RPC protocol.
-- `ui.py` contains presentation and interaction logic. Network and batch work runs outside the GUI thread.
+- `ui.py` contains the PySide6 desktop shell: top toolbar, sidebar navigation, service-backed dashboard/search/workspace pages, inspector and collector docks, persistent layouts, and interaction logic. Network and batch work runs outside the GUI thread.
 
 ## Collection flow
 
@@ -46,9 +49,17 @@ Failures remain attached to their jobs and can be retried. A successful retry is
 
 `security.py` builds security-research briefs from records already admitted into an investigation. The brief builder ranks CVEs, exposed public services, breach exposure, and disclosure gaps from archived intelligence; every risk item preserves its reasons and source URLs. `reports.py` can export these briefs separately from full case reports for quick triage handoff.
 
+## Workspace service flow
+
+`app_services.py` composes the application once and exposes stable services to UI, CLI, and future API layers. The UI can ask `UniversalSearchService` for normalized inputs, local FTS matches, and next collector requests without knowing collector IDs. Dashboard, graph, timeline, and enrichment views read through `workspace.py`, keeping presentation code away from SQL and making the next UI overhaul incremental instead of a rewrite.
+
 ## Free social-source boundary
 
 Social collectors must remain free to run and must use either public endpoints/feeds or generated public profile URLs. Platforms with reliable free public endpoints can produce live findings; platforms that require login, paid API access, or restrictive developer approval are represented as explicitly unverified review leads. Matching social handles are never treated as identity proof by themselves.
+
+## Civic and household boundary
+
+Election collectors provide official registration/status resource routing and may use the Census Geocoder to infer state-level context from an address. They do not retrieve voter rolls or confirm an individual's registration. Household collectors produce address-level geography and public-record search leads; they do not identify residents or infer household membership.
 
 ## Trust semantics
 

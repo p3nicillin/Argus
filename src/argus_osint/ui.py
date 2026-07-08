@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import math
 import traceback
@@ -10,6 +11,7 @@ from typing import Any
 
 from PySide6.QtCore import (
     QAbstractTableModel,
+    QByteArray,
     QDateTime,
     QModelIndex,
     QObject,
@@ -45,6 +47,7 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -57,8 +60,11 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QStatusBar,
+    QStackedWidget,
+    QStyle,
     QTableView,
     QTabWidget,
     QTextBrowser,
@@ -68,6 +74,7 @@ from PySide6.QtWidgets import (
 )
 
 from .bundles import InvestigationBundle
+from .campaigns import CampaignPlanner
 from .collectors import Collector, CollectorContext, CollectorRegistry, Finding
 from .config import SecretStore, Settings, SettingsStore
 from .correlation import CorrelationEngine
@@ -77,51 +84,71 @@ from .operations import OperationManager
 from .plugins import PluginManager
 from .reports import ReportEngine
 from .repository import Repository
+from .universal import UniversalSearchService
+from .workspace import DashboardService, GraphService, TimelineService
 
 DARK_STYLE = """
-QWidget { background:#111820; color:#dce7ef; font-family:'Segoe UI'; }
-QMainWindow, QDialog { background:#0e141b; }
-QToolBar { background:#151f29; border:0; border-bottom:1px solid #273746; spacing:5px; padding:5px; }
-QToolButton, QPushButton { background:#20303e; border:1px solid #31495b; border-radius:5px; padding:6px 12px; }
-QToolButton:hover, QPushButton:hover { background:#29465a; border-color:#43a6d8; }
-QPushButton:pressed { background:#17374a; }
-QPushButton#primary { background:#1979a8; border-color:#36a5d4; color:white; font-weight:600; }
-QLineEdit, QPlainTextEdit, QTextBrowser, QComboBox, QSpinBox { background:#0d141b; border:1px solid #304252; border-radius:5px; padding:6px; selection-background-color:#1d79a7; }
-QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus { border-color:#43a6d8; }
-QTableView { background:#111a22; alternate-background-color:#15212b; gridline-color:#263746; border:1px solid #263746; }
-QHeaderView::section { background:#1b2935; color:#a9c2d3; border:0; border-right:1px solid #304252; padding:7px; font-weight:600; }
-QTableView::item:selected, QListWidget::item:selected { background:#1a668a; color:white; }
-QTabWidget::pane { border:1px solid #273746; }
-QTabBar::tab { background:#151f29; padding:8px 14px; border:1px solid #273746; }
-QTabBar::tab:selected { background:#1e3444; border-bottom:2px solid #45a9d8; }
-QDockWidget::title { background:#1b2935; padding:7px; font-weight:600; }
-QStatusBar { background:#151f29; border-top:1px solid #273746; }
-QProgressBar { border:1px solid #304252; border-radius:4px; text-align:center; background:#0d141b; }
-QProgressBar::chunk { background:#2e9dcc; }
-QFrame#card { background:#17232d; border:1px solid #2a3e4d; border-radius:8px; }
-QLabel#metric { color:#55b9e4; font-size:24px; font-weight:700; }
-QLabel#muted { color:#839aaa; }
+QWidget { background:#0E1117; color:#F0F6FC; font-family:'Segoe UI'; }
+QMainWindow, QDialog { background:#0E1117; }
+QToolBar { background:#161B22; border:0; border-bottom:1px solid #2D333B; spacing:7px; padding:8px; }
+QToolButton, QPushButton { background:#1C2128; border:1px solid #2D333B; border-radius:10px; padding:7px 12px; color:#F0F6FC; }
+QToolButton:hover, QPushButton:hover { background:#222A33; border-color:#4F8EF7; }
+QPushButton:pressed { background:#182232; }
+QPushButton#primary { background:#1F6FEB; border-color:#4F8EF7; color:white; font-weight:600; }
+QPushButton#ghost { background:transparent; border:1px solid #2D333B; }
+QLineEdit, QPlainTextEdit, QTextBrowser, QComboBox, QSpinBox { background:#0D1117; border:1px solid #2D333B; border-radius:10px; padding:8px; selection-background-color:#1F6FEB; color:#F0F6FC; }
+QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus { border-color:#4F8EF7; }
+QTableView { background:#0D1117; alternate-background-color:#111820; gridline-color:#2D333B; border:1px solid #2D333B; border-radius:10px; selection-background-color:#1F6FEB; }
+QHeaderView::section { background:#161B22; color:#8B949E; border:0; border-right:1px solid #2D333B; padding:8px; font-weight:600; }
+QTableView::item:selected, QListWidget::item:selected { background:#1F6FEB; color:white; }
+QTabWidget::pane { border:1px solid #2D333B; border-radius:10px; top:-1px; }
+QTabBar::tab { background:#161B22; padding:9px 14px; border:1px solid #2D333B; border-top-left-radius:8px; border-top-right-radius:8px; margin-right:2px; color:#8B949E; }
+QTabBar::tab:selected { background:#1C2128; color:#F0F6FC; border-bottom:2px solid #4F8EF7; }
+QDockWidget::title { background:#161B22; padding:8px; font-weight:600; border:1px solid #2D333B; }
+QStatusBar { background:#161B22; border-top:1px solid #2D333B; color:#8B949E; }
+QProgressBar { border:1px solid #2D333B; border-radius:8px; text-align:center; background:#0D1117; }
+QProgressBar::chunk { background:#4F8EF7; border-radius:8px; }
+QFrame#card, QFrame#searchHero { background:#1C2128; border:1px solid #2D333B; border-radius:12px; }
+QFrame#card:hover { border-color:#4F8EF7; }
+QListWidget#sidebar { background:#0D1117; border:0; border-right:1px solid #2D333B; padding:8px; outline:0; }
+QListWidget#sidebar::item { padding:10px 12px; margin:2px 0; border-radius:10px; color:#8B949E; }
+QListWidget#sidebar::item:hover { background:#161B22; color:#F0F6FC; }
+QListWidget#sidebar::item:selected { background:#1C2128; color:#F0F6FC; border-left:3px solid #4F8EF7; }
+QLabel#pageTitle { font-size:24px; font-weight:700; color:#F0F6FC; }
+QLabel#sectionTitle { font-size:14px; font-weight:700; color:#F0F6FC; }
+QLabel#metric { color:#56CCF2; font-size:28px; font-weight:700; }
+QLabel#muted { color:#8B949E; }
+QLabel#pill { color:#56CCF2; background:#102033; border:1px solid #224A70; border-radius:8px; padding:3px 8px; }
 """
 
 LIGHT_STYLE = """
-QWidget { background:#f4f7fa; color:#17212b; font-family:'Segoe UI'; }
-QMainWindow, QDialog { background:#edf2f6; }
-QToolBar { background:white; border:0; border-bottom:1px solid #ced9e1; spacing:5px; padding:5px; }
-QToolButton, QPushButton { background:#fff; border:1px solid #bdcbd5; border-radius:5px; padding:6px 12px; }
-QToolButton:hover, QPushButton:hover { background:#e7f3f9; border-color:#248ebc; }
-QPushButton#primary { background:#1979a8; border-color:#176f9a; color:white; font-weight:600; }
-QLineEdit, QPlainTextEdit, QTextBrowser, QComboBox, QSpinBox { background:white; border:1px solid #b9c8d3; border-radius:5px; padding:6px; selection-background-color:#60afd1; }
-QTableView { background:white; alternate-background-color:#f3f7fa; gridline-color:#d6e0e7; border:1px solid #c8d5df; }
-QHeaderView::section { background:#e7eef3; color:#344b5b; border:0; border-right:1px solid #c8d5df; padding:7px; font-weight:600; }
-QTableView::item:selected, QListWidget::item:selected { background:#318cb4; color:white; }
-QTabWidget::pane { border:1px solid #c8d5df; }
-QTabBar::tab { background:#e7eef3; padding:8px 14px; border:1px solid #c8d5df; }
-QTabBar::tab:selected { background:white; border-bottom:2px solid #248ebc; }
-QDockWidget::title { background:#e2eaf0; padding:7px; font-weight:600; }
-QStatusBar { background:white; border-top:1px solid #ced9e1; }
-QFrame#card { background:white; border:1px solid #ced9e1; border-radius:8px; }
-QLabel#metric { color:#147ba8; font-size:24px; font-weight:700; }
-QLabel#muted { color:#627988; }
+QWidget { background:#F6F8FA; color:#1F2328; font-family:'Segoe UI'; }
+QMainWindow, QDialog { background:#F6F8FA; }
+QToolBar { background:white; border:0; border-bottom:1px solid #D0D7DE; spacing:7px; padding:8px; }
+QToolButton, QPushButton { background:white; border:1px solid #D0D7DE; border-radius:10px; padding:7px 12px; }
+QToolButton:hover, QPushButton:hover { background:#EEF5FF; border-color:#4F8EF7; }
+QPushButton#primary { background:#0969DA; border-color:#4F8EF7; color:white; font-weight:600; }
+QPushButton#ghost { background:transparent; border:1px solid #D0D7DE; }
+QLineEdit, QPlainTextEdit, QTextBrowser, QComboBox, QSpinBox { background:white; border:1px solid #D0D7DE; border-radius:10px; padding:8px; selection-background-color:#4F8EF7; }
+QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus { border-color:#4F8EF7; }
+QTableView { background:white; alternate-background-color:#F6F8FA; gridline-color:#D0D7DE; border:1px solid #D0D7DE; border-radius:10px; }
+QHeaderView::section { background:#F6F8FA; color:#57606A; border:0; border-right:1px solid #D0D7DE; padding:8px; font-weight:600; }
+QTableView::item:selected, QListWidget::item:selected { background:#0969DA; color:white; }
+QTabWidget::pane { border:1px solid #D0D7DE; border-radius:10px; top:-1px; }
+QTabBar::tab { background:#EAEEF2; padding:9px 14px; border:1px solid #D0D7DE; border-top-left-radius:8px; border-top-right-radius:8px; margin-right:2px; color:#57606A; }
+QTabBar::tab:selected { background:white; color:#1F2328; border-bottom:2px solid #0969DA; }
+QDockWidget::title { background:#F6F8FA; padding:8px; font-weight:600; border:1px solid #D0D7DE; }
+QStatusBar { background:white; border-top:1px solid #D0D7DE; color:#57606A; }
+QFrame#card, QFrame#searchHero { background:white; border:1px solid #D0D7DE; border-radius:12px; }
+QListWidget#sidebar { background:white; border:0; border-right:1px solid #D0D7DE; padding:8px; outline:0; }
+QListWidget#sidebar::item { padding:10px 12px; margin:2px 0; border-radius:10px; color:#57606A; }
+QListWidget#sidebar::item:hover { background:#F6F8FA; color:#1F2328; }
+QListWidget#sidebar::item:selected { background:#EEF5FF; color:#1F2328; border-left:3px solid #0969DA; }
+QLabel#pageTitle { font-size:24px; font-weight:700; color:#1F2328; }
+QLabel#sectionTitle { font-size:14px; font-weight:700; color:#1F2328; }
+QLabel#metric { color:#0969DA; font-size:28px; font-weight:700; }
+QLabel#muted { color:#57606A; }
+QLabel#pill { color:#0969DA; background:#EEF5FF; border:1px solid #B6D7FF; border-radius:8px; padding:3px 8px; }
 """
 
 
@@ -188,8 +215,27 @@ def configured_table(columns: list[tuple[str, str]]) -> tuple[QTableView, TableM
     table.setAlternatingRowColors(True)
     table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
     table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    table.setShowGrid(False)
+    table.setWordWrap(False)
+    table.verticalHeader().setVisible(False)
+    table.verticalHeader().setDefaultSectionSize(34)
     table.horizontalHeader().setStretchLastSection(True)
-    table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+    table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+    table.horizontalHeader().setMinimumSectionSize(110)
+    table.setContextMenuPolicy(Qt.ContextMenuPolicy.ActionsContextMenu)
+    copy_action = QAction("Copy selected row", table)
+    copy_action.triggered.connect(
+        lambda: QApplication.clipboard().setText(
+            json.dumps(
+                proxy.mapToSource(table.currentIndex()).data(Qt.ItemDataRole.UserRole) or {},
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+        if table.currentIndex().isValid()
+        else None
+    )
+    table.addAction(copy_action)
     return table, model, proxy
 
 
@@ -883,41 +929,78 @@ class MainWindow(QMainWindow):
         self.operations = OperationManager(self.repository, self.registry, self.collector_context)
         self.correlation = self.operations.correlation
         self.bundle = InvestigationBundle(self.repository, self.evidence)
+        self.campaign_planner = CampaignPlanner(self.registry)
+        self.universal_search = UniversalSearchService(self.repository, self.campaign_planner)
+        self.dashboard_service = DashboardService(self.repository)
+        self.graph_service = GraphService(self.repository)
+        self.timeline_service = TimelineService(self.repository)
 
     def _build_ui(self) -> None:
         toolbar = QToolBar("Main", self)
+        toolbar.setObjectName("topToolbar")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
-        for text, shortcut, callback in (
-            ("New case", "Ctrl+N", self.new_case),
-            ("Add entity", "Ctrl+E", self.add_entity),
-            ("Add relationship", "Ctrl+L", self.add_relationship),
-            ("Add timeline event", "Ctrl+T", self.add_timeline_event),
-            ("Add note", "Ctrl+Shift+N", self.add_note),
-            ("Add evidence", "Ctrl+I", self.add_evidence),
-            ("Export report", "Ctrl+R", self.export_report),
+        for icon, text, shortcut, callback in (
+            ("SP_FileDialogNewFolder", "New", "Ctrl+N", self.new_case),
+            ("SP_FileIcon", "Entity", "Ctrl+E", self.add_entity),
+            ("SP_DialogOpenButton", "Evidence", "Ctrl+I", self.add_evidence),
+            ("SP_DialogSaveButton", "Report", "Ctrl+R", self.export_report),
         ):
             action = QAction(text, self)
+            action.setIcon(self._standard_icon(icon))
             action.setShortcut(QKeySequence(shortcut))
             action.triggered.connect(callback)
             toolbar.addAction(action)
         toolbar.addSeparator()
         self.global_search = QLineEdit()
-        self.global_search.setPlaceholderText("Search all investigations…  Ctrl+K")
-        self.global_search.setMaximumWidth(430)
+        self.global_search.setPlaceholderText(
+            "Universal search: domain, email, CVE, handle, address, IP...  Ctrl+K"
+        )
+        self.global_search.setMinimumWidth(360)
+        self.global_search.setMaximumWidth(620)
         self.global_search.returnPressed.connect(self.run_search)
         toolbar.addWidget(self.global_search)
         QShortcut(QKeySequence("Ctrl+K"), self, self.global_search.setFocus)
+        save_search_action = QAction("Save", self)
+        save_search_action.setIcon(self._standard_icon("SP_DialogSaveButton"))
+        save_search_action.triggered.connect(self.save_current_search)
+        toolbar.addAction(save_search_action)
+        open_search_action = QAction("Recent", self)
+        open_search_action.setIcon(self._standard_icon("SP_BrowserReload"))
+        open_search_action.triggered.connect(self.open_saved_search)
+        toolbar.addAction(open_search_action)
+        toolbar.addSeparator()
+        command_action = QAction("Command", self)
+        command_action.setIcon(self._standard_icon("SP_FileDialogDetailedView"))
+        command_action.setShortcut(QKeySequence("Ctrl+Shift+P"))
+        command_action.triggered.connect(self.command_palette)
+        toolbar.addAction(command_action)
+        theme_action = QAction("Theme", self)
+        theme_action.setIcon(self._standard_icon("SP_DesktopIcon"))
+        theme_action.setShortcut(QKeySequence("Ctrl+Shift+T"))
+        theme_action.triggered.connect(self.toggle_theme)
+        toolbar.addAction(theme_action)
         settings_action = QAction("Settings", self)
+        settings_action.setIcon(self._standard_icon("SP_FileDialogInfoView"))
         settings_action.triggered.connect(self.edit_settings)
         toolbar.addAction(settings_action)
-        self.tabs = QTabWidget()
-        self.tabs.setDocumentMode(True)
-        self.setCentralWidget(self.tabs)
-        self.dashboard = QWidget()
-        self.dashboard_layout = QVBoxLayout(self.dashboard)
-        self.metric_layout = QHBoxLayout()
-        self.dashboard_layout.addLayout(self.metric_layout)
+
+        shell = QWidget()
+        shell_layout = QHBoxLayout(shell)
+        shell_layout.setContentsMargins(0, 0, 0, 0)
+        shell_layout.setSpacing(0)
+        self.sidebar = QListWidget()
+        self.sidebar.setObjectName("sidebar")
+        self.sidebar.setFixedWidth(235)
+        self.sidebar.setIconSize(self._standard_icon("SP_FileIcon").actualSize(self.size()))
+        self.sidebar.currentRowChanged.connect(self._sidebar_changed)
+        shell_layout.addWidget(self.sidebar)
+        self.pages = QStackedWidget()
+        shell_layout.addWidget(self.pages, 1)
+        self.setCentralWidget(shell)
+
+        self.dashboard = self._build_dashboard_page()
+        self.pages.addWidget(self.dashboard)
         self.case_table, self.case_model, self.case_proxy = configured_table(
             [
                 ("id", "ID"),
@@ -928,10 +1011,41 @@ class MainWindow(QMainWindow):
             ]
         )
         self.case_table.doubleClicked.connect(self._case_double_clicked)
-        self.dashboard_layout.addWidget(self.case_table, 1)
-        self.tabs.addTab(self.dashboard, "Investigations")
+        self.dashboard_cases_card.layout().addWidget(self.case_table, 1)
+
+        self.search_page = self._build_search_page()
+        self.pages.addWidget(self.search_page)
+
+        self.case_workspace = QWidget()
+        case_layout = QVBoxLayout(self.case_workspace)
+        case_layout.setContentsMargins(18, 18, 18, 18)
+        self.case_header = QFrame()
+        self.case_header.setObjectName("card")
+        case_header_layout = QHBoxLayout(self.case_header)
+        case_title_group = QVBoxLayout()
+        self.case_title = QLabel("No investigation selected")
+        self.case_title.setObjectName("pageTitle")
+        self.case_meta = QLabel("Open or create a case to begin collection and analysis.")
+        self.case_meta.setObjectName("muted")
+        case_title_group.addWidget(self.case_title)
+        case_title_group.addWidget(self.case_meta)
+        case_header_layout.addLayout(case_title_group, 1)
+        for label, callback in (
+            ("Add entity", self.add_entity),
+            ("Add note", self.add_note),
+            ("Add evidence", self.add_evidence),
+            ("Export", self.export_report),
+        ):
+            button = QPushButton(label)
+            if label == "Add entity":
+                button.setObjectName("primary")
+            button.clicked.connect(callback)
+            case_header_layout.addWidget(button)
+        case_layout.addWidget(self.case_header)
         self.case_tabs = QTabWidget()
-        self.tabs.addTab(self.case_tabs, "Case workspace")
+        self.case_tabs.setDocumentMode(True)
+        case_layout.addWidget(self.case_tabs, 1)
+        self.pages.addWidget(self.case_workspace)
         self.entity_table, self.entity_model, self.entity_proxy = configured_table(
             [
                 ("kind", "Type"),
@@ -1009,6 +1123,26 @@ class MainWindow(QMainWindow):
                 ("created_at", "Created"),
             ]
         )
+        self.profile_table, self.profile_model, self.profile_proxy = configured_table(
+            [
+                ("kind", "Type"),
+                ("value", "Profile / Handle"),
+                ("display_name", "Name"),
+                ("confidence", "Confidence"),
+                ("verified", "Verified"),
+                ("source_url", "Source"),
+            ]
+        )
+        self.domain_table, self.domain_model, self.domain_proxy = configured_table(
+            [
+                ("kind", "Type"),
+                ("value", "Infrastructure"),
+                ("display_name", "Name"),
+                ("confidence", "Confidence"),
+                ("verified", "Verified"),
+                ("source_url", "Source"),
+            ]
+        )
         jobs_widget = QWidget()
         jobs_layout = QVBoxLayout(jobs_widget)
         jobs_actions = QHBoxLayout()
@@ -1038,6 +1172,8 @@ class MainWindow(QMainWindow):
             (self.bookmark_table, "Bookmarks"),
             (self.comment_table, "Comments"),
             (jobs_widget, "Collection jobs"),
+            (self.profile_table, "Public profiles"),
+            (self.domain_table, "Domains & infrastructure"),
         ):
             self.case_tabs.addTab(widget, label)
         self.search_table, self.search_model, self.search_proxy = configured_table(
@@ -1048,18 +1184,45 @@ class MainWindow(QMainWindow):
                 ("excerpt", "Match"),
             ]
         )
-        self.tabs.addTab(self.search_table, "Search results")
+        self.search_results_card.layout().addWidget(self.search_table, 1)
+        self.search_plan_table, self.search_plan_model, self.search_plan_proxy = configured_table(
+            [
+                ("collector", "Collector"),
+                ("query", "Query"),
+                ("reason", "Why Argus recommends it"),
+            ]
+        )
+        self.search_plan_card.layout().addWidget(self.search_plan_table, 1)
+        self.history_table, self.history_model, self.history_proxy = configured_table(
+            [
+                ("query", "Query"),
+                ("result_count", "Results"),
+                ("created_at", "Searched"),
+            ]
+        )
+        self.history_page = self._simple_table_page(
+            "History",
+            "Search history and recent analyst activity.",
+            self.history_table,
+        )
+        self.pages.addWidget(self.history_page)
+        self.plugins_page = self._build_plugins_page()
+        self.pages.addWidget(self.plugins_page)
+        self.settings_page = self._build_settings_page()
+        self.pages.addWidget(self.settings_page)
         self.inspector = QTextBrowser()
         self.inspector.setOpenExternalLinks(True)
-        dock = QDockWidget("Inspector", self)
-        dock.setWidget(self.inspector)
-        dock.setAllowedAreas(
+        self.inspector_dock = QDockWidget("Inspector", self)
+        self.inspector_dock.setWidget(self.inspector)
+        self.inspector_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )
-        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.inspector_dock)
         for table in (
             self.case_table,
             self.entity_table,
+            self.profile_table,
+            self.domain_table,
             self.evidence_table,
             self.timeline_table,
             self.notes_table,
@@ -1069,6 +1232,8 @@ class MainWindow(QMainWindow):
             self.comment_table,
             self.job_table,
             self.search_table,
+            self.search_plan_table,
+            self.history_table,
         ):
             table.clicked.connect(lambda index, t=table: self._inspect(t, index))
         self.correlation_panel.table.clicked.connect(
@@ -1076,14 +1241,21 @@ class MainWindow(QMainWindow):
         )
         self.collector_panel = CollectorPanel(self.registry, self.operations, lambda: self.case_id)
         self.collector_panel.job_changed.connect(self.refresh_case)
-        collector_dock = QDockWidget("OSINT collectors", self)
-        collector_dock.setWidget(self.collector_panel)
-        collector_dock.setAllowedAreas(
-            Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+        self.collector_dock = QDockWidget("OSINT collectors", self)
+        self.collector_dock.setWidget(self.collector_panel)
+        self.collector_dock.setAllowedAreas(
+            Qt.DockWidgetArea.LeftDockWidgetArea
+            | Qt.DockWidgetArea.RightDockWidgetArea
+            | Qt.DockWidgetArea.BottomDockWidgetArea
         )
-        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, collector_dock)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.collector_dock)
         self.setStatusBar(QStatusBar())
-        self.statusBar().showMessage(f"Workspace: {self.workspace}")
+        self.status_workspace = QLabel(f"Workspace: {self.workspace}")
+        self.status_case = QLabel("No case selected")
+        self.status_records = QLabel("")
+        self.statusBar().addWidget(self.status_workspace, 1)
+        self.statusBar().addPermanentWidget(self.status_case)
+        self.statusBar().addPermanentWidget(self.status_records)
         menu = self.menuBar()
         file_menu = menu.addMenu("&File")
         file_menu.addAction("New investigation", self.new_case, QKeySequence("Ctrl+N"))
@@ -1108,9 +1280,340 @@ class MainWindow(QMainWindow):
         search_menu.addAction("Save current search…", self.save_current_search)
         search_menu.addAction("Open saved search…", self.open_saved_search)
         view_menu = menu.addMenu("&View")
-        view_menu.addAction(dock.toggleViewAction())
-        view_menu.addAction(collector_dock.toggleViewAction())
+        view_menu.addAction(self.inspector_dock.toggleViewAction())
+        view_menu.addAction(self.collector_dock.toggleViewAction())
         view_menu.addAction("Toggle theme", self.toggle_theme, QKeySequence("Ctrl+Shift+T"))
+        view_menu.addAction("Restore default layout", self.restore_default_layout)
+        self._add_navigation()
+        self.sidebar.setCurrentRow(0)
+        self._restore_window_layout()
+
+    def _standard_icon(self, name: str) -> Any:
+        pixmap = getattr(QStyle.StandardPixmap, name, QStyle.StandardPixmap.SP_FileIcon)
+        return self.style().standardIcon(pixmap)
+
+    def _card(self, title: str = "", subtitle: str = "") -> QFrame:
+        card = QFrame()
+        card.setObjectName("card")
+        card.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(8)
+        if title:
+            header = QLabel(title)
+            header.setObjectName("sectionTitle")
+            layout.addWidget(header)
+        if subtitle:
+            hint = QLabel(subtitle)
+            hint.setObjectName("muted")
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
+        return card
+
+    def _page_header(self, title: str, subtitle: str) -> QFrame:
+        header = QFrame()
+        header.setObjectName("card")
+        layout = QVBoxLayout(header)
+        layout.setContentsMargins(16, 14, 16, 14)
+        heading = QLabel(title)
+        heading.setObjectName("pageTitle")
+        body = QLabel(subtitle)
+        body.setObjectName("muted")
+        body.setWordWrap(True)
+        layout.addWidget(heading)
+        layout.addWidget(body)
+        return header
+
+    def _build_dashboard_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+        layout.addWidget(
+            self._page_header(
+                "Security Research Dashboard",
+                "Recent investigations, system health, search history, and analyst shortcuts.",
+            )
+        )
+        self.metric_layout = QGridLayout()
+        self.metric_layout.setSpacing(12)
+        layout.addLayout(self.metric_layout)
+        grid = QGridLayout()
+        grid.setSpacing(12)
+        self.dashboard_cases_card = self._card("Investigations", "Open a case or review activity.")
+        self.dashboard_pinned_table, self.dashboard_pinned_model, _ = configured_table(
+            [("id", "ID"), ("title", "Pinned case"), ("status", "Status"), ("updated_at", "Updated")]
+        )
+        pinned_card = self._card("Pinned cases", "Cases tagged with pinned.")
+        pinned_card.layout().addWidget(self.dashboard_pinned_table, 1)
+        self.dashboard_history_table, self.dashboard_history_model, _ = configured_table(
+            [("query", "Query"), ("result_count", "Results"), ("created_at", "Searched")]
+        )
+        history_card = self._card("Search history", "Recent searches across the workspace.")
+        history_card.layout().addWidget(self.dashboard_history_table, 1)
+        self.dashboard_saved_table, self.dashboard_saved_model, _ = configured_table(
+            [("name", "Saved search"), ("query", "Query"), ("created_at", "Created")]
+        )
+        saved_card = self._card("Saved searches", "Reusable search templates.")
+        saved_card.layout().addWidget(self.dashboard_saved_table, 1)
+        self.dashboard_jobs_table, self.dashboard_jobs_model, _ = configured_table(
+            [("status", "Status"), ("collector", "Collector"), ("query", "Query"), ("created_at", "Queued")]
+        )
+        jobs_card = self._card("System status", "Recent collection jobs and API activity.")
+        jobs_card.layout().addWidget(self.dashboard_jobs_table, 1)
+        grid.addWidget(self.dashboard_cases_card, 0, 0, 2, 2)
+        grid.addWidget(pinned_card, 0, 2)
+        grid.addWidget(history_card, 1, 2)
+        grid.addWidget(saved_card, 2, 0)
+        grid.addWidget(jobs_card, 2, 1, 1, 2)
+        grid.setColumnStretch(0, 2)
+        grid.setColumnStretch(1, 2)
+        grid.setColumnStretch(2, 2)
+        layout.addLayout(grid, 1)
+        return page
+
+    def _build_search_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+        hero = QFrame()
+        hero.setObjectName("searchHero")
+        hero_layout = QVBoxLayout(hero)
+        hero_layout.setContentsMargins(16, 16, 16, 16)
+        title = QLabel("Universal Search")
+        title.setObjectName("pageTitle")
+        self.search_summary = QLabel(
+            "Search local case data and generate bounded free-source collection plans."
+        )
+        self.search_summary.setObjectName("muted")
+        self.search_summary.setWordWrap(True)
+        row = QHBoxLayout()
+        self.search_entry = QLineEdit()
+        self.search_entry.setPlaceholderText("Try CVE-2024-3094, example.org, @handle, email, phone, address...")
+        self.search_entry.returnPressed.connect(self.run_search)
+        search_button = QPushButton("Search")
+        search_button.setObjectName("primary")
+        search_button.clicked.connect(self.run_search)
+        row.addWidget(self.search_entry, 1)
+        row.addWidget(search_button)
+        suggestions = QHBoxLayout()
+        for label, query in (
+            ("CVE", "CVE-2024-3094"),
+            ("Domain", "example.org"),
+            ("GitHub", "https://github.com/octocat"),
+            ("Address", "4600 Silver Hill Rd, Washington, DC 20233"),
+        ):
+            button = QPushButton(label)
+            button.setObjectName("ghost")
+            button.clicked.connect(lambda _checked=False, value=query: self._set_search_template(value))
+            suggestions.addWidget(button)
+        suggestions.addStretch(1)
+        self.search_kind = QLabel("Ready")
+        self.search_kind.setObjectName("pill")
+        suggestions.addWidget(self.search_kind)
+        hero_layout.addWidget(title)
+        hero_layout.addWidget(self.search_summary)
+        hero_layout.addLayout(row)
+        hero_layout.addLayout(suggestions)
+        layout.addWidget(hero)
+        result_grid = QGridLayout()
+        result_grid.setSpacing(12)
+        self.search_results_card = self._card("Local results", "Matches from indexed investigations.")
+        self.search_plan_card = self._card("Recommended collection", "Explainable next steps.")
+        result_grid.addWidget(self.search_results_card, 0, 0, 1, 2)
+        result_grid.addWidget(self.search_plan_card, 0, 2)
+        result_grid.setColumnStretch(0, 2)
+        result_grid.setColumnStretch(1, 2)
+        result_grid.setColumnStretch(2, 2)
+        layout.addLayout(result_grid, 1)
+        return page
+
+    def _simple_table_page(self, title: str, subtitle: str, table: QTableView) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+        layout.addWidget(self._page_header(title, subtitle))
+        card = self._card(title)
+        card.layout().addWidget(table, 1)
+        layout.addWidget(card, 1)
+        return page
+
+    def _build_plugins_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+        layout.addWidget(
+            self._page_header(
+                "Plugins",
+                "Review installed plugin metadata and manage the local extension directory.",
+            )
+        )
+        card = self._card("Installed plugins", "Plugins run out-of-process over JSON-RPC.")
+        self.plugin_table, self.plugin_model, _ = configured_table(
+            [("plugin_id", "Plugin"), ("version", "Version"), ("enabled", "Enabled"), ("updated_at", "Updated")]
+        )
+        card.layout().addWidget(self.plugin_table, 1)
+        layout.addWidget(card, 1)
+        return page
+
+    def _build_settings_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
+        layout.addWidget(
+            self._page_header(
+                "Settings",
+                "Theme, workspace, investigator identity, proxy, timeout, and optional free-tier API keys.",
+            )
+        )
+        card = self._card("Workspace controls")
+        row = QHBoxLayout()
+        for label, callback in (
+            ("Open workspace", self.choose_workspace),
+            ("Application settings", self.edit_settings),
+            ("Toggle theme", self.toggle_theme),
+            ("Restore layout", self.restore_default_layout),
+        ):
+            button = QPushButton(label)
+            if label == "Application settings":
+                button.setObjectName("primary")
+            button.clicked.connect(callback)
+            row.addWidget(button)
+        row.addStretch(1)
+        card.layout().addLayout(row)
+        layout.addWidget(card)
+        layout.addStretch(1)
+        return page
+
+    def _add_navigation(self) -> None:
+        self.nav_specs: list[tuple[str, str, str]] = [
+            ("dashboard", "Dashboard", "SP_ComputerIcon"),
+            ("search", "Search", "SP_FileDialogContentsView"),
+            ("investigations", "Investigations", "SP_DirIcon"),
+            ("profiles", "Public Profiles", "SP_FileIcon"),
+            ("infrastructure", "Domains & Infrastructure", "SP_DriveNetIcon"),
+            ("relationships", "Relationships", "SP_CommandLink"),
+            ("maps", "Maps", "SP_DriveHDIcon"),
+            ("timeline", "Timeline", "SP_BrowserReload"),
+            ("notes", "Notes", "SP_FileDialogInfoView"),
+            ("evidence", "Evidence", "SP_DialogOpenButton"),
+            ("reports", "Reports", "SP_DialogSaveButton"),
+            ("bookmarks", "Bookmarks", "SP_DialogYesButton"),
+            ("history", "History", "SP_FileDialogDetailedView"),
+            ("plugins", "Plugins", "SP_FileDialogListView"),
+            ("settings", "Settings", "SP_FileDialogInfoView"),
+        ]
+        for key, label, icon in self.nav_specs:
+            item = QListWidgetItem(self._standard_icon(icon), label)
+            item.setData(Qt.ItemDataRole.UserRole, key)
+            self.sidebar.addItem(item)
+
+    def _sidebar_changed(self, row: int) -> None:
+        item = self.sidebar.item(row)
+        if item is None:
+            return
+        key = item.data(Qt.ItemDataRole.UserRole)
+        case_tabs = {
+            "profiles": self.profile_table,
+            "infrastructure": self.domain_table,
+            "relationships": self.graph,
+            "maps": self.map_view,
+            "timeline": self.timeline_table,
+            "notes": self.notes_table,
+            "evidence": self.evidence_table,
+            "reports": self.source_table,
+            "bookmarks": self.bookmark_table,
+        }
+        if key == "dashboard":
+            self.pages.setCurrentWidget(self.dashboard)
+        elif key == "search":
+            self.pages.setCurrentWidget(self.search_page)
+            self.search_entry.setFocus()
+        elif key == "investigations":
+            self.pages.setCurrentWidget(self.dashboard)
+            self.case_table.setFocus()
+        elif key in case_tabs:
+            self.pages.setCurrentWidget(self.case_workspace)
+            self.case_tabs.setCurrentWidget(case_tabs[key])
+            if self.case_id is None:
+                self._notify("Open an investigation to use this workspace view.")
+        elif key == "history":
+            self.pages.setCurrentWidget(self.history_page)
+        elif key == "plugins":
+            self.pages.setCurrentWidget(self.plugins_page)
+        elif key == "settings":
+            self.pages.setCurrentWidget(self.settings_page)
+
+    def _set_search_template(self, query: str) -> None:
+        self.search_entry.setText(query)
+        self.global_search.setText(query)
+        self.run_search()
+
+    def _layout_file(self) -> Path:
+        return self.workspace / "ui-layout.json"
+
+    def _restore_window_layout(self) -> None:
+        path = self._layout_file()
+        if not path.exists():
+            return
+        with contextlib.suppress(Exception):
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            geometry = payload.get("geometry")
+            state = payload.get("state")
+            if geometry:
+                self.restoreGeometry(QByteArray.fromBase64(QByteArray(geometry.encode("ascii"))))
+            if state:
+                self.restoreState(QByteArray.fromBase64(QByteArray(state.encode("ascii"))))
+
+    def _save_window_layout(self) -> None:
+        payload = {
+            "geometry": bytes(self.saveGeometry().toBase64()).decode("ascii"),
+            "state": bytes(self.saveState().toBase64()).decode("ascii"),
+        }
+        self._layout_file().write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _notify(self, message: str, timeout: int = 5000) -> None:
+        self.statusBar().showMessage(message, timeout)
+
+    def restore_default_layout(self) -> None:
+        with contextlib.suppress(OSError):
+            self._layout_file().unlink()
+        self.resize(1480, 900)
+        self.inspector_dock.show()
+        self.collector_dock.show()
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.inspector_dock)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.collector_dock)
+        self._notify("Default workspace layout restored.")
+
+    def command_palette(self) -> None:
+        commands: list[tuple[str, Callable[[], None]]] = [
+            ("New investigation", self.new_case),
+            ("Universal search", self.global_search.setFocus),
+            ("Add entity", self.add_entity),
+            ("Add note", self.add_note),
+            ("Add evidence", self.add_evidence),
+            ("Export report", self.export_report),
+            ("Open saved search", self.open_saved_search),
+            ("Toggle theme", self.toggle_theme),
+            ("Settings", self.edit_settings),
+        ]
+        selected, accepted = QInputDialog.getItem(
+            self,
+            "Command palette",
+            "Run command",
+            [label for label, _callback in commands],
+            0,
+            False,
+        )
+        if accepted:
+            for label, callback in commands:
+                if label == selected:
+                    callback()
+                    break
 
     def _apply_theme(self) -> None:
         QApplication.instance().setStyleSheet(
@@ -1123,6 +1626,7 @@ class MainWindow(QMainWindow):
     def _metric(self, title: str, value: int) -> QFrame:
         card = QFrame()
         card.setObjectName("card")
+        card.setMinimumHeight(92)
         layout = QVBoxLayout(card)
         metric = QLabel(str(value))
         metric.setObjectName("metric")
@@ -1135,33 +1639,59 @@ class MainWindow(QMainWindow):
     def refresh_cases(self) -> None:
         rows = self.repository.list_investigations()
         self.case_model.set_rows(rows)
-        stats = self.repository.dashboard_stats()
+        overview = self.dashboard_service.overview()
+        stats = overview["stats"]
         while self.metric_layout.count():
             item = self.metric_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        for title, value in (
+        for index, (title, value) in enumerate((
             ("Investigations", len(rows)),
             ("Active", sum(r["status"] == "active" for r in rows)),
             ("Entities", stats["entities"]),
             ("Evidence", stats["evidence"]),
             ("Collected records", stats["intelligence"]),
             ("Operations", stats["collection_jobs"]),
-        ):
-            self.metric_layout.addWidget(self._metric(title, value))
+        )):
+            self.metric_layout.addWidget(self._metric(title, value), index // 3, index % 3)
+        self.dashboard_pinned_model.set_rows(overview["pinned_investigations"])
+        self.dashboard_history_model.set_rows(overview["search_history"])
+        self.dashboard_saved_model.set_rows(overview["saved_searches"])
+        self.dashboard_jobs_model.set_rows(overview["recent_jobs"])
+        self.history_model.set_rows(overview["search_history"])
+        self.plugin_model.set_rows(self.repository.db.all("SELECT * FROM plugins ORDER BY plugin_id"))
+        self.status_records.setText(
+            f"{stats['entities']} entities · {stats['intelligence']} findings · {stats['collection_jobs']} jobs"
+        )
 
     def select_case(self, case_id: int) -> None:
         self.case_id = case_id
         case = self.repository.investigation(case_id)
-        self.tabs.setTabText(1, case["title"])
-        self.tabs.setCurrentIndex(1)
+        self.case_title.setText(case["title"])
+        self.case_meta.setText(
+            f"{case['status']} · {case['investigator'] or 'No investigator'} · "
+            f"updated {case['updated_at']}"
+        )
+        self.pages.setCurrentWidget(self.case_workspace)
         self.refresh_case()
-        self.statusBar().showMessage(f"Investigation {case_id}: {case['title']}")
+        self.status_case.setText(f"Case {case_id}: {case['title']}")
+        self._notify(f"Opened investigation {case_id}: {case['title']}")
 
     def refresh_case(self) -> None:
         if self.case_id is None:
             return
-        self.entity_model.set_rows(self.repository.rows("entities", self.case_id))
+        entities = self.repository.rows("entities", self.case_id)
+        self.entity_model.set_rows(entities)
+        self.profile_model.set_rows([
+            entity
+            for entity in entities
+            if entity["kind"] in {"person", "username", "email", "phone", "social_profile"}
+        ])
+        self.domain_model.set_rows([
+            entity
+            for entity in entities
+            if entity["kind"] in {"domain", "ip", "url", "asn", "cve", "file_hash"}
+        ])
         self.evidence_model.set_rows(self.repository.rows("evidence", self.case_id))
         self.timeline_model.set_rows(self.repository.rows("timeline_events", self.case_id))
         self.notes_model.set_rows(self.repository.rows("notes", self.case_id))
@@ -1170,10 +1700,7 @@ class MainWindow(QMainWindow):
         self.source_model.set_rows(self.repository.rows("source_records", self.case_id))
         self.comment_model.set_rows(self.repository.rows("comments", self.case_id))
         self.job_model.set_rows(self.repository.rows("collection_jobs", self.case_id))
-        self.graph.render_data(
-            self.repository.rows("entities", self.case_id),
-            self.repository.rows("relationships", self.case_id),
-        )
+        self.graph.render_data(entities, self.repository.rows("relationships", self.case_id))
         self.map_view.render_locations(self.repository.rows("locations", self.case_id))
         self.correlation_panel.refresh()
         self.refresh_cases()
@@ -1461,18 +1988,38 @@ class MainWindow(QMainWindow):
 
     def run_search(self) -> None:
         query = self.global_search.text().strip()
+        if not query and hasattr(self, "search_entry"):
+            query = self.search_entry.text().strip()
         if not query:
             return
-        self.search_model.set_rows(self.repository.search(query))
-        self.tabs.setCurrentWidget(self.search_table)
+        self.global_search.setText(query)
+        if hasattr(self, "search_entry"):
+            self.search_entry.setText(query)
+        result = self.universal_search.search(query)
+        normalized = result["input"]
+        self.search_model.set_rows(result["local_results"])
+        self.search_plan_model.set_rows(result["plan"])
+        self.search_kind.setText(normalized["kind"].replace("_", " ").title())
+        warning = "; ".join(normalized["warnings"])
+        plan_count = len(result["plan"])
+        self.search_summary.setText(
+            f"{result['local_result_count']} local matches · {plan_count} recommended collectors"
+            + (f" · {warning}" if warning else "")
+        )
+        self.pages.setCurrentWidget(self.search_page)
+        self._notify(f"Search complete: {query}")
 
     def save_current_search(self) -> None:
         query = self.global_search.text().strip()
+        if not query and hasattr(self, "search_entry"):
+            query = self.search_entry.text().strip()
         if not query:
             return
         name, accepted = QInputDialog.getText(self, "Save search", "Search name")
         if accepted and name.strip():
             self.repository.save_search(name, query)
+            self.refresh_cases()
+            self._notify(f"Saved search: {name}")
 
     def open_saved_search(self) -> None:
         searches = self.repository.saved_searches()
@@ -1486,6 +2033,8 @@ class MainWindow(QMainWindow):
         if accepted:
             search = next(item for item in searches if item["name"] == selected)
             self.global_search.setText(search["query"])
+            if hasattr(self, "search_entry"):
+                self.search_entry.setText(search["query"])
             self.run_search()
 
     def export_report(self) -> None:
@@ -1570,17 +2119,20 @@ class MainWindow(QMainWindow):
             self.settings_store.save(self.settings)
             self.repository.actor = self.settings.investigator
             self._apply_theme()
+            self._notify("Settings updated.")
 
     def toggle_theme(self) -> None:
         self.settings.theme = "light" if self.settings.theme == "dark" else "dark"
         self.settings_store.save(self.settings)
         self._apply_theme()
+        self._notify(f"{self.settings.theme.title()} theme enabled.")
 
     def choose_workspace(self) -> None:
         path = QFileDialog.getExistingDirectory(self, "Open workspace", str(self.workspace))
         if not path or Path(path).resolve() == self.workspace:
             return
         QThreadPool.globalInstance().waitForDone(5000)
+        self._save_window_layout()
         self.db.close()
         self.settings.workspace = path
         self.settings_store.save(self.settings)
@@ -1588,11 +2140,17 @@ class MainWindow(QMainWindow):
         self.collector_panel.set_operations(self.operations)
         self.correlation_panel.engine = self.correlation
         self.case_id = None
+        self.status_workspace.setText(f"Workspace: {self.workspace}")
+        self.status_case.setText("No case selected")
+        self.case_title.setText("No investigation selected")
+        self.case_meta.setText("Open or create a case to begin collection and analysis.")
         self.refresh_cases()
-        self.tabs.setCurrentIndex(0)
+        self.pages.setCurrentWidget(self.dashboard)
+        self._restore_window_layout()
 
     def closeEvent(self, event: Any) -> None:
         self.settings_store.save(self.settings)
+        self._save_window_layout()
         QThreadPool.globalInstance().waitForDone(5000)
         self.db.close()
         event.accept()

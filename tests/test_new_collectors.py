@@ -13,12 +13,16 @@ import pytest
 
 from argus_osint.collectors import (
     BreachCollector,
+    CensusAddressCollector,
     CISAKEVCollector,
     CollectorRegistry,
+    ElectionRegistrationCollector,
+    EmailUnsubscribeCollector,
     EPSSCollector,
     GitLabCollector,
     GravatarCollector,
     HackerNewsCollector,
+    HouseholdPublicRecordsCollector,
     KeybaseCollector,
     NVDCollector,
     PackageRegistryCollector,
@@ -84,7 +88,9 @@ def test_all_new_collectors_registered():
     for expected in {"data_broker", "gravatar", "keybase", "hackernews",
                      "reddit", "gitlab", "package_registry", "security_txt",
                      "robots_sitemap", "nvd_cve", "cisa_kev", "epss",
-                     "shodan_internetdb", "urlscan", "social_profiles", "youtube"}:
+                     "shodan_internetdb", "urlscan", "social_profiles", "youtube",
+                     "email_unsubscribe", "election_registration", "census_address",
+                     "household_records"}:
         assert expected in ids
 
 
@@ -386,3 +392,92 @@ def test_youtube_resolves_handle_and_reads_public_feed():
     assert ("youtube_channel", "UCabc12345678901234567890") in {
         (entity["kind"], entity["value"]) for entity in f.entities
     }
+
+
+def test_email_unsubscribe_parses_list_headers():
+    raw = """From: Example Sender <news@example.org>
+Return-Path: <bounce@example.org>
+List-ID: Example Newsletter <news.example.org>
+List-Unsubscribe: <mailto:unsubscribe@example.org?subject=unsubscribe>, <https://example.org/unsub?id=abc>
+List-Unsubscribe-Post: List-Unsubscribe=One-Click
+Authentication-Results: mx.example; spf=pass smtp.mailfrom=example.org
+
+Hello
+"""
+    f = _run(EmailUnsubscribeCollector().collect(raw, FakeContext()))[0]
+    assert f.data["cost"] == "free"
+    assert f.data["does_not_click_links"] is True
+    assert f.data["one_click_supported"] is True
+    kinds = {(option["kind"], option["target"]) for option in f.data["unsubscribe_options"]}
+    assert ("mailto", "mailto:unsubscribe@example.org?subject=unsubscribe") in kinds
+    assert ("url", "https://example.org/unsub?id=abc") in kinds
+    entities = {(entity["kind"], entity["value"]) for entity in f.entities}
+    assert ("email", "unsubscribe@example.org") in entities
+    assert ("url", "https://example.org/unsub?id=abc") in entities
+    assert ("domain", "example.org") in entities
+
+
+def test_email_unsubscribe_plain_address_returns_guidance():
+    f = _run(EmailUnsubscribeCollector().collect("person@example.org", FakeContext()))[0]
+    assert f.data["headers_required"] is True
+    assert f.data["requires_api_key"] is False
+    assert f.entities[0] == {"kind": "email", "value": "person@example.org", "verified": False}
+
+
+def _census_payload():
+    return {
+        "result": {
+            "addressMatches": [{
+                "matchedAddress": "4600 SILVER HILL RD, WASHINGTON, DC, 20233",
+                "coordinates": {"x": -76.9274872423, "y": 38.8460162239},
+                "addressComponents": {"state": "DC", "city": "WASHINGTON", "zip": "20233"},
+                "geographies": {
+                    "Counties": [{"NAME": "District of Columbia", "GEOID": "11001"}],
+                    "Census Tracts": [{"NAME": "Tract 8024.01", "GEOID": "11001002401"}],
+                    "Congressional Districts": [{"NAME": "Delegate District", "GEOID": "98"}],
+                },
+            }],
+        }
+    }
+
+
+def test_election_registration_state_resources_are_official_and_free():
+    f = _run(ElectionRegistrationCollector().collect("DC", FakeContext()))[0]
+    assert f.data["state"] == {"code": "DC", "name": "District of Columbia"}
+    assert f.data["does_not_query_voter_rolls"] is True
+    assert all(item["cost"] == "free" for item in f.data["resources"])
+    assert any("vote.gov" in item["url"] for item in f.data["resources"])
+    assert any("nass.org" in item["url"] for item in f.data["resources"])
+
+
+def test_election_registration_address_uses_census_state():
+    ctx = FakeContext({"geocoding.geo.census.gov": _census_payload()})
+    f = _run(ElectionRegistrationCollector().collect(
+        "4600 Silver Hill Rd, Washington, DC 20233", ctx
+    ))[0]
+    assert f.data["state"]["code"] == "DC"
+    assert f.data["matched_address"] == "4600 SILVER HILL RD, WASHINGTON, DC, 20233"
+    assert ("state", "DC") in {(entity["kind"], entity["value"]) for entity in f.entities}
+
+
+def test_census_address_collector_extracts_geographies_and_location():
+    ctx = FakeContext({"geocoding.geo.census.gov": _census_payload()})
+    f = _run(CensusAddressCollector().collect(
+        "4600 Silver Hill Rd, Washington, DC 20233", ctx
+    ))[0]
+    assert f.data["match_count"] == 1
+    assert f.data["latitude"] == pytest.approx(38.8460162239)
+    assert f.data["geographies"]["Counties"]["GEOID"] == "11001"
+    assert f.entities[0]["kind"] == "address"
+
+
+def test_household_public_records_are_address_leads_not_resident_claims():
+    ctx = FakeContext({"geocoding.geo.census.gov": _census_payload()})
+    f = _run(HouseholdPublicRecordsCollector().collect(
+        "4600 Silver Hill Rd, Washington, DC 20233", ctx
+    ))[0]
+    assert f.data["identity_match"] is False
+    assert "does not identify residents" in f.data["warning"]
+    lead_titles = {lead["title"] for lead in f.data["leads"]}
+    assert {"County property assessor", "County election office"} <= lead_titles
+    assert all("search.usa.gov" in lead["search_url"] for lead in f.data["leads"])

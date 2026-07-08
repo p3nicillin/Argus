@@ -17,9 +17,13 @@ def test_candidate_links_for_name():
     assert len(leads) >= 20  # registry expanded to a useful breadth
     spokeo = next(lead for lead in leads if lead["broker"] == "Spokeo")
     assert spokeo["search_url"] == "https://www.spokeo.com/Luke+McClellan"
+    whitepages = next(lead for lead in leads if lead["broker"] == "Whitepages")
+    assert whitepages["search_url"] == "https://www.whitepages.com/name/Luke+McClellan"
+    assert whitepages["opt_out_url"] == "https://www.whitepages.com/suppression-requests"
     # every lead is explicitly an unverified candidate
     assert all(lead["identity_match"] is False for lead in leads)
     assert all(lead["status"] == "unverified candidate" for lead in leads)
+    assert all("removal_status" in lead for lead in leads)
 
 
 def test_candidate_links_email_uses_local_part():
@@ -45,3 +49,4 @@ def test_collector_registered_and_shaped():
     assert f.entities[0] == {"kind": "person", "value": "Luke McClellan", "verified": False}
     assert len(f.data["candidates"]) == len([b for b in databrokers.BROKERS if b.search_url])
     assert "warning" in f.data
+    assert any(candidate["opt_out_url"] for candidate in f.data["candidates"])

@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 from urllib.parse import urlparse
 
+from . import civic
 from .collectors import CollectorRegistry
 from .operations import OperationManager
 
@@ -55,6 +56,19 @@ class CampaignPlanner:
                 self._request("dns", seed, "Resolve reverse DNS and RDAP"),
                 self._request("urlscan", seed, "Find public scans that observed this IP"),
             ])
+        elif entity_kind == "phone":
+            requests.extend([
+                self._request("phone", seed, "Parse public numbering-plan metadata offline"),
+                self._request("data_broker", seed, "Generate unverified people-search leads"),
+            ])
+        elif entity_kind == "file_hash":
+            requests.append(
+                self._request(
+                    "virustotal",
+                    seed,
+                    "Check official hash reputation when a free VirusTotal API key is configured",
+                )
+            )
         elif entity_kind == "url":
             requests.extend([
                 self._request("web", seed, "Fingerprint URL and redirects"),
@@ -75,7 +89,34 @@ class CampaignPlanner:
                 self._request("breach", seed, "Check lawful breach exposure sources"),
                 self._request("gravatar", seed, "Check public Gravatar profile signals"),
                 self._request("data_broker", seed, "Generate unverified broker review leads"),
+                self._request(
+                    "email_unsubscribe",
+                    seed,
+                    "Parse unsubscribe headers from a specific message source",
+                ),
             ])
+        elif entity_kind in {"address", "household"}:
+            requests.extend([
+                self._request("census_address", seed, "Resolve address through Census geography"),
+                self._request(
+                    "household_records",
+                    seed,
+                    "Generate address-level public-record and election-office leads",
+                ),
+                self._request(
+                    "election_registration",
+                    seed,
+                    "Find official voter registration resources for the address state",
+                ),
+            ])
+        elif entity_kind == "state":
+            requests.append(
+                self._request(
+                    "election_registration",
+                    seed,
+                    "Find official voter registration and status resources",
+                )
+            )
         elif entity_kind == "username":
             handle = seed.lstrip("@")
             requests.extend([
@@ -85,8 +126,16 @@ class CampaignPlanner:
                 self._request("github", handle, "Collect public GitHub account data"),
                 self._request("gitlab", handle, "Collect public GitLab account data"),
                 self._request("reddit", handle, "Collect public Reddit account data"),
+                self._request("bluesky", handle, "Collect public Bluesky account data"),
+                self._request("mastodon", handle, "Collect public Mastodon profile data"),
                 self._request("keybase", handle, "Collect public Keybase proofs"),
                 self._request("hackernews", handle, "Collect public Hacker News profile"),
+            ])
+        elif entity_kind in {"github", "gitlab", "reddit", "youtube", "bluesky", "mastodon"}:
+            handle = seed.lstrip("@").rstrip("/").split("/")[-1]
+            requests.extend([
+                self._request(entity_kind, handle, f"Collect public {entity_kind} account data"),
+                self._request("social_profiles", handle, "Generate cross-platform public profile leads"),
             ])
         elif entity_kind in {"person", "company", "organization"}:
             requests.extend([
@@ -119,6 +168,8 @@ class CampaignPlanner:
         seed = value.strip()
         if re.fullmatch(r"CVE-\d{4}-\d{4,}", seed.upper()):
             return "cve"
+        if civic.normalize_state(seed):
+            return "state"
         if re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", seed):
             return "email"
         parsed = urlparse(seed)
@@ -134,6 +185,8 @@ class CampaignPlanner:
             seed,
         ):
             return "domain"
+        if any(character.isdigit() for character in seed) and "," in seed:
+            return "address"
         if re.fullmatch(r"@?[A-Za-z0-9_.-]{3,50}", seed):
             return "username"
         return "person"

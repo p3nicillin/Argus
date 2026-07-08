@@ -10,13 +10,15 @@ import ssl
 import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
+from email import policy
+from email.parser import Parser
 from pathlib import Path
 from typing import Any, Protocol
-from urllib.parse import quote, urljoin, urlparse
+from urllib.parse import parse_qs, quote, unquote, urljoin, urlparse
 
 import httpx
 
-from . import databrokers
+from . import civic, databrokers
 from .config import SecretStore, Settings
 from .db import Database
 from .evidence import extract_metadata
@@ -1756,6 +1758,356 @@ class EmailCollector:
         ]
 
 
+class EmailUnsubscribeCollector:
+    id, name = "email_unsubscribe", "Email unsubscribe analysis"
+    description, query_hint = (
+        "Parse pasted email headers/source or a local .eml path for unsubscribe options",
+        "Paste raw headers/source or /path/to/message.eml",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        raw, source = await asyncio.to_thread(self._load_source, query)
+        if not raw.strip() or "\n" not in raw:
+            value = query.strip().lower()
+            if re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", value):
+                return [
+                    Finding(
+                        f"Email unsubscribe analysis: {value}",
+                        "",
+                        {
+                            "address": value,
+                            "headers_required": True,
+                            "cost": "free",
+                            "requires_api_key": False,
+                            "does_not_click_links": True,
+                            "guidance": [
+                                "Paste the raw email headers or full .eml source to extract List-Unsubscribe options.",
+                                "Argus does not connect to your mailbox or click unsubscribe links.",
+                            ],
+                        },
+                        confidence=0.2,
+                        entities=[{"kind": "email", "value": value, "verified": False}],
+                    )
+                ]
+            raise ValueError("Paste email headers/source or provide a local .eml/header file path")
+        message = Parser(policy=policy.default).parsestr(raw)
+        headers = {
+            name.lower(): message.get_all(name, [])
+            for name in (
+                "From",
+                "Reply-To",
+                "Sender",
+                "Return-Path",
+                "List-ID",
+                "List-Unsubscribe",
+                "List-Unsubscribe-Post",
+                "List-Help",
+                "List-Owner",
+                "Precedence",
+                "Feedback-ID",
+                "Authentication-Results",
+                "DKIM-Signature",
+            )
+        }
+        list_unsubscribe = self._header_values(headers, "list-unsubscribe")
+        unsubscribe_targets = self._unsubscribe_targets(list_unsubscribe)
+        one_click = any(
+            "list-unsubscribe=one-click" in value.casefold()
+            for value in self._header_values(headers, "list-unsubscribe-post")
+        )
+        options = [self._option(target, one_click) for target in unsubscribe_targets]
+        sender_domains = self._sender_domains(headers)
+        risk_notes = self._risk_notes(options, sender_domains, headers)
+        entities: list[dict[str, Any]] = []
+        for domain in sender_domains:
+            entities.append({"kind": "domain", "value": domain, "verified": False})
+        for option in options:
+            if option["kind"] == "mailto" and option.get("address"):
+                entities.append({"kind": "email", "value": option["address"], "verified": False})
+            elif option["kind"] == "url":
+                entities.append({"kind": "url", "value": option["target"], "verified": False})
+        return [
+            Finding(
+                "Email unsubscribe options",
+                source,
+                {
+                    "source": source,
+                    "cost": "free",
+                    "requires_api_key": False,
+                    "does_not_click_links": True,
+                    "one_click_supported": one_click,
+                    "unsubscribe_options": options,
+                    "sender_domains": sender_domains,
+                    "headers": {
+                        key: values for key, values in headers.items() if values
+                    },
+                    "risk_notes": risk_notes,
+                    "guidance": [
+                        "Prefer provider-native unsubscribe buttons for suspicious mail.",
+                        "Do not open unsubscribe URLs from suspected phishing messages.",
+                        "Mailto unsubscribe addresses can reveal that an inbox is active.",
+                    ],
+                },
+                confidence=0.8 if options else 0.3,
+                entities=entities,
+            )
+        ]
+
+    @staticmethod
+    def _load_source(query: str) -> tuple[str, str]:
+        value = query.strip()
+        candidate = Path(value).expanduser() if "\n" not in value and len(value) < 4096 else None
+        if candidate and candidate.is_file():
+            return candidate.read_text(encoding="utf-8", errors="replace"), candidate.as_uri()
+        return query, "pasted email source"
+
+    @staticmethod
+    def _header_values(headers: dict[str, list[str]], name: str) -> list[str]:
+        return [str(value) for value in headers.get(name, []) if str(value).strip()]
+
+    @staticmethod
+    def _unsubscribe_targets(values: list[str]) -> list[str]:
+        targets: list[str] = []
+        for value in values:
+            matches = re.findall(r"<([^>]+)>", value)
+            if not matches:
+                matches = [item.strip() for item in value.split(",")]
+            for match in matches:
+                target = match.strip().strip("<>").strip()
+                if target and target not in targets:
+                    targets.append(target)
+        return targets
+
+    @staticmethod
+    def _option(target: str, one_click: bool) -> dict[str, Any]:
+        parsed = urlparse(target)
+        if parsed.scheme.casefold() == "mailto":
+            address = unquote(parsed.path)
+            params = parse_qs(parsed.query)
+            return {
+                "kind": "mailto",
+                "target": target,
+                "address": address,
+                "subject": (params.get("subject") or [""])[0],
+                "one_click": False,
+                "safe_action": "review before sending mail",
+            }
+        if parsed.scheme.casefold() in {"http", "https"}:
+            return {
+                "kind": "url",
+                "target": target,
+                "domain": parsed.hostname or "",
+                "one_click": one_click,
+                "safe_action": "do not open automatically",
+            }
+        return {
+            "kind": parsed.scheme.casefold() or "unknown",
+            "target": target,
+            "one_click": False,
+            "safe_action": "review manually",
+        }
+
+    @staticmethod
+    def _sender_domains(headers: dict[str, list[str]]) -> list[str]:
+        domains: list[str] = []
+        for key in ("from", "reply-to", "sender", "return-path", "list-owner"):
+            for value in headers.get(key, []):
+                for domain in re.findall(r"@([A-Za-z0-9.-]+\.[A-Za-z]{2,})", value):
+                    cleaned = domain.lower().strip(".")
+                    if cleaned not in domains:
+                        domains.append(cleaned)
+        for value in headers.get("list-id", []):
+            match = re.search(r"<[^@<>]*@?([A-Za-z0-9.-]+\.[A-Za-z]{2,})>", value)
+            if match and match.group(1).lower() not in domains:
+                domains.append(match.group(1).lower())
+        return domains
+
+    @staticmethod
+    def _risk_notes(
+        options: list[dict[str, Any]],
+        sender_domains: list[str],
+        headers: dict[str, list[str]],
+    ) -> list[str]:
+        notes: list[str] = []
+        option_domains = {
+            str(option.get("domain", "")).lower()
+            for option in options
+            if option.get("domain")
+        }
+        if not options:
+            notes.append("No List-Unsubscribe header was found.")
+        if option_domains and sender_domains and not option_domains.intersection(sender_domains):
+            notes.append("Unsubscribe URL domain differs from visible sender/list domains.")
+        if not headers.get("authentication-results"):
+            notes.append("No Authentication-Results header was present in the supplied source.")
+        if any(option["kind"] == "mailto" for option in options):
+            notes.append("Mailto unsubscribe can disclose that the mailbox is active.")
+        return notes
+
+
+class ElectionRegistrationCollector:
+    id, name = "election_registration", "Election registration resources"
+    description, query_hint = (
+        "Official voter registration/status resources by state or household address",
+        "California, CA, or 4600 Silver Hill Rd, Washington, DC",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        value = query.strip()
+        if not value:
+            raise ValueError("Enter a state, territory, or U.S. address")
+        state = civic.normalize_state(value)
+        geocode: dict[str, Any] = {}
+        match: dict[str, Any] = {}
+        if not state:
+            geocode = await context.get_json(
+                "https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress",
+                params=civic.census_geocoder_params(value),
+                cache_ttl=86400,
+            )
+            match = civic.best_census_match(geocode)
+            state = civic.state_from_census_match(match)
+        resources = civic.election_resources(state)
+        entities: list[dict[str, Any]] = []
+        if state:
+            entities.append({
+                "kind": "state",
+                "value": state[0],
+                "display_name": state[1],
+                "verified": True,
+            })
+        if match.get("matchedAddress"):
+            entities.append({
+                "kind": "address",
+                "value": match["matchedAddress"],
+                "verified": False,
+            })
+        return [
+            Finding(
+                f"Election registration resources: {state[1] if state else value}",
+                "https://vote.gov/register",
+                {
+                    "input": value,
+                    "state": {"code": state[0], "name": state[1]} if state else {},
+                    "matched_address": match.get("matchedAddress", ""),
+                    "resources": resources,
+                    "cost": "free",
+                    "requires_api_key": False,
+                    "does_not_query_voter_rolls": True,
+                    "warning": (
+                        "Argus links to official registration/status resources; it does not "
+                        "retrieve private voter records or determine whether a named person is registered."
+                    ),
+                    "census_geocoder": geocode,
+                },
+                confidence=0.8 if state else 0.4,
+                entities=entities,
+            )
+        ]
+
+
+class CensusAddressCollector:
+    id, name = "census_address", "Census address geographies"
+    description, query_hint = (
+        "Free U.S. Census Geocoder address match, coordinates and geography layers",
+        "4600 Silver Hill Rd, Washington, DC 20233",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        address = query.strip()
+        if len(address) < 5:
+            raise ValueError("Enter a U.S. address")
+        data = await context.get_json(
+            "https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress",
+            params=civic.census_geocoder_params(address),
+            cache_ttl=86400,
+        )
+        matches = civic.census_matches(data)
+        best = matches[0] if matches else {}
+        coordinates = best.get("coordinates", {}) if best else {}
+        matched = best.get("matchedAddress", address)
+        summary = civic.geography_summary(best)
+        entities: list[dict[str, Any]] = [
+            {"kind": "address", "value": matched, "verified": bool(best)}
+        ]
+        components = best.get("addressComponents", {}) if best else {}
+        if components.get("state"):
+            state = civic.normalize_state(str(components["state"]))
+            if state:
+                entities.append({
+                    "kind": "state",
+                    "value": state[0],
+                    "display_name": state[1],
+                    "verified": True,
+                })
+        return [
+            Finding(
+                f"Census address geographies: {matched}",
+                "https://geocoding.geo.census.gov/geocoder/",
+                {
+                    "input": address,
+                    "matched_address": matched,
+                    "match_count": len(matches),
+                    "latitude": coordinates.get("y"),
+                    "longitude": coordinates.get("x"),
+                    "geographies": summary,
+                    "raw": data,
+                    "cost": "free",
+                    "requires_api_key": False,
+                    "warning": "Census geocoding provides geography context, not household resident identity.",
+                },
+                confidence=0.9 if best else 0.2,
+                entities=entities,
+            )
+        ]
+
+
+class HouseholdPublicRecordsCollector:
+    id, name = "household_records", "Household public-record leads"
+    description, query_hint = (
+        "Address-level public-record search leads for property, recorder, GIS and elections offices",
+        "4600 Silver Hill Rd, Washington, DC 20233",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        address = query.strip()
+        if len(address) < 5:
+            raise ValueError("Enter a household or property address")
+        data = await context.get_json(
+            "https://geocoding.geo.census.gov/geocoder/geographies/onelineaddress",
+            params=civic.census_geocoder_params(address),
+            cache_ttl=86400,
+        )
+        best = civic.best_census_match(data)
+        matched = best.get("matchedAddress", address)
+        leads = civic.government_record_leads(matched, best)
+        entities = [{"kind": "address", "value": matched, "verified": bool(best)}]
+        coordinates = best.get("coordinates", {}) if best else {}
+        return [
+            Finding(
+                f"Household public-record leads: {matched}",
+                "https://search.usa.gov/",
+                {
+                    "input": address,
+                    "matched_address": matched,
+                    "latitude": coordinates.get("y"),
+                    "longitude": coordinates.get("x"),
+                    "geographies": civic.geography_summary(best),
+                    "leads": leads,
+                    "cost": "free",
+                    "requires_api_key": False,
+                    "identity_match": False,
+                    "warning": (
+                        "These are address-level public-record leads. Argus does not identify "
+                        "residents, scrape voter rolls, or assert who lives at a household."
+                    ),
+                },
+                confidence=0.7 if best else 0.3,
+                entities=entities,
+            )
+        ]
+
+
 class PhoneCollector:
     id, name = "phone", "Phone number analysis"
     description, query_hint = (
@@ -2024,6 +2376,10 @@ class CollectorRegistry:
         for collector in (
             DNSCollector(),
             EmailCollector(),
+            EmailUnsubscribeCollector(),
+            ElectionRegistrationCollector(),
+            CensusAddressCollector(),
+            HouseholdPublicRecordsCollector(),
             PhoneCollector(),
             WebCollector(),
             SecurityTxtCollector(),

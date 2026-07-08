@@ -22,12 +22,15 @@ On first launch, Argus creates a workspace in the platform-specific user-data di
 - Store notes, typed entities, aliases, confidence and verification state, relationships, timelines, bookmarks, comments, intelligence records, tags, locations, source provenance, and audit history in SQLite/WAL.
 - Ingest evidence into content-addressed managed storage, extract image/EXIF and file metadata, calculate SHA-256, verify integrity, and export manifests.
 - Search across investigations, notes, entities, evidence metadata, timelines, bookmarks, and collector results with SQLite FTS5.
+- Use universal search services that normalize names, usernames, emails, phones, domains, URLs, social profile URLs, IPs, hashes, CVEs, addresses, states, crypto wallets, ASNs, and CIDR inputs into local search plus bounded collection plans.
 - Generate conservative, explainable entity-correlation suggestions; an investigator must accept a suggestion before it becomes an unverified relationship.
-- Explore interactive relationship graphs and an offline geospatial observation map without leaking case coordinates to a tile provider.
+- Navigate a service-backed enterprise desktop shell with sidebar sections, dashboard summaries, universal search, relationship graphs, unified timelines, entity enrichment profiles, inspector panels, dockable collectors, persistent layouts, and an offline geospatial observation map without leaking case coordinates to a tile provider.
 - Merge duplicate entities while retaining aliases, relationships, locations, timeline references, confidence, and audit provenance.
 - Export reports as PDF, HTML, DOCX, Markdown, CSV, JSON, or text.
 - Export and import integrity-checked `.argus` investigation bundles containing records and verified evidence bytes, with ZIP traversal and decompression-bomb defenses.
-- Run DNS/WHOIS/RDAP, email and phone analysis, website/TLS fingerprinting, security.txt, robots.txt and sitemap discovery, certificate transparency, GeoIP/ASN, NVD CVE records, CISA Known Exploited Vulnerabilities, FIRST EPSS scoring, Shodan InternetDB exposure snapshots, urlscan.io public search, GitHub, GitLab, Gravatar, Keybase, Hacker News, Reddit, YouTube public channel RSS, broad social-profile leads, Steam, Discord invite, Bluesky, Mastodon, GLEIF company, GDELT news, Wayback Machine, package-registry (PyPI/npm) metadata, breach exposure (free by default via XposedOrNot, HIBP when a key is set), VirusTotal, local file analysis, and explicitly unverified cross-platform username and data-broker correlation.
+- Run DNS/WHOIS/RDAP, email and phone analysis, safe email unsubscribe-header analysis, official election registration resource lookup, Census address/geography lookup, household public-record lead generation, website/TLS fingerprinting, security.txt, robots.txt and sitemap discovery, certificate transparency, GeoIP/ASN, NVD CVE records, CISA Known Exploited Vulnerabilities, FIRST EPSS scoring, Shodan InternetDB exposure snapshots, urlscan.io public search, GitHub, GitLab, Gravatar, Keybase, Hacker News, Reddit, YouTube public channel RSS, broad social-profile leads, Steam, Discord invite, Bluesky, Mastodon, GLEIF company, GDELT news, Wayback Machine, package-registry (PyPI/npm) metadata, breach exposure (free by default via XposedOrNot, HIBP when a key is set), VirusTotal, local file analysis, and explicitly unverified cross-platform username and data-broker correlation.
+- Generate Whitepages-style people-search/data-broker review leads with manual opt-out and privacy links where known. These are exposure-management leads, not identity assertions.
+- Link to official voter registration/status resources without querying voter rolls, and build household/address context from Census geography and public-record search leads without identifying residents.
 - Plan and run bounded security-research campaigns from domains, IPs, URLs, CVEs, emails, usernames, people, or organisations, expanding from archived entities through the normal queued operation pipeline.
 - Generate risk-prioritized security briefs that summarize collector coverage, source provenance, top security risks, and recommended next collection steps.
 - Breach findings surface the exposed organisations as company and domain entities, so correlation can link a subject to the sources that leaked their data.
@@ -44,6 +47,7 @@ Installed plugins are not automatically trusted. Argus validates archive paths a
 Checksums in an investigation bundle detect corruption but do not establish who created the bundle. Establish authenticity through a separately trusted signature or transport channel.
 
 See [Architecture](docs/ARCHITECTURE.md) for the component and data-flow design.
+See [Platform overhaul](docs/PLATFORM_OVERHAUL.md) for the staged enterprise-grade modernization plan.
 
 ## Tests
 

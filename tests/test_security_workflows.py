@@ -38,13 +38,24 @@ def test_campaign_planner_builds_security_domain_and_cve_plans():
     domain_plan = planner.plan_seed("example.org")
     cve_plan = planner.plan_seed("CVE-2024-3094")
     username_plan = planner.plan_seed("alice")
+    email_plan = planner.plan_seed("person@example.org")
+    state_plan = planner.plan_seed("DC")
+    address_plan = planner.plan_seed("4600 Silver Hill Rd, Washington, DC 20233")
 
     assert {"dns", "web", "security_txt", "robots_sitemap", "urlscan"} <= {
         item.collector for item in domain_plan
     }
     assert [item.collector for item in cve_plan[:3]] == ["nvd_cve", "cisa_kev", "epss"]
     assert {"social_profiles", "youtube", "reddit"} <= {item.collector for item in username_plan}
-    assert all(item.reason for item in domain_plan + cve_plan + username_plan)
+    assert "email_unsubscribe" in {item.collector for item in email_plan}
+    assert [item.collector for item in state_plan] == ["election_registration"]
+    assert {"census_address", "household_records", "election_registration"} <= {
+        item.collector for item in address_plan
+    }
+    assert all(
+        item.reason
+        for item in domain_plan + cve_plan + username_plan + email_plan + state_plan + address_plan
+    )
 
 
 def test_campaign_runner_archives_seed_results(tmp_path: Path):
