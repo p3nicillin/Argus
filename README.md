@@ -15,6 +15,16 @@ python -m argus_osint.main
 
 On first launch, Argus creates a workspace in the platform-specific user-data directory. Choose **File → Open workspace** to use another folder. Add API credentials in **Settings**.
 
+## Local web app
+
+Argus also includes a local-first web shell that keeps the Python collectors, SQLite workspace, evidence storage, and reporting engine on your machine.
+
+```powershell
+python -m argus_osint.web
+```
+
+The web app listens on `http://127.0.0.1:8765/` by default and serves both the static UI and JSON API from the local process. Use `--no-browser`, `--host`, or `--port` for automation.
+
 ## Included capabilities
 
 - Create, edit, archive, reopen, duplicate, and merge investigations.
@@ -24,7 +34,7 @@ On first launch, Argus creates a workspace in the platform-specific user-data di
 - Search across investigations, notes, entities, evidence metadata, timelines, bookmarks, and collector results with SQLite FTS5.
 - Use universal search services that normalize names, usernames, emails, phones, domains, URLs, social profile URLs, IPs, hashes, CVEs, addresses, states, crypto wallets, ASNs, and CIDR inputs into local search plus bounded collection plans.
 - Generate conservative, explainable entity-correlation suggestions; an investigator must accept a suggestion before it becomes an unverified relationship.
-- Navigate a service-backed enterprise desktop shell with sidebar sections, dashboard summaries, universal search, relationship graphs, unified timelines, entity enrichment profiles, inspector panels, dockable collectors, persistent layouts, and an offline geospatial observation map without leaking case coordinates to a tile provider.
+- Navigate a service-backed enterprise desktop shell or local web shell with sidebar sections, dashboard summaries, universal search, relationship graphs, unified timelines, entity enrichment profiles, inspector panels, collector controls, persistent layouts, and an offline geospatial observation map without leaking case coordinates to a tile provider.
 - Merge duplicate entities while retaining aliases, relationships, locations, timeline references, confidence, and audit provenance.
 - Export reports as PDF, HTML, DOCX, Markdown, CSV, JSON, or text.
 - Export and import integrity-checked `.argus` investigation bundles containing records and verified evidence bytes, with ZIP traversal and decompression-bomb defenses.

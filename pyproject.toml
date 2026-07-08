@@ -28,6 +28,7 @@ dev = ["pytest>=8.3", "pytest-cov>=6", "ruff>=0.9", "mypy>=1.14"]
 
 [project.scripts]
 argus-osint = "argus_osint.main:main"
+argus-osint-web = "argus_osint.web:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/argus_osint"]

@@ -9,6 +9,8 @@ Argus is deliberately local-first. An investigation can contain sensitive workin
 - `app_services.py` is the desktop composition root. It wires settings, SQLite, repository, collector registry, HTTP context, operations, campaign planning, reporting, universal search, dashboard, graph, timeline, enrichment, and security brief services.
 - `universal.py` normalizes mixed OSINT/security inputs into stable seed types and pairs local FTS search with bounded collection plans.
 - `workspace.py` provides read-model services for dashboard panels, relationship graphs, unified timelines, and entity enrichment profiles.
+- `web.py` serves a local-only HTTP API and static web shell on `127.0.0.1` by default. It reuses the same `ArgusServices` composition root as the desktop UI.
+- `web_static/` contains the zero-build browser interface for dashboard, universal search, investigations, entities, graph, timeline, evidence, reports, and settings.
 - `collectors.py` contains bounded, lawful public-source adapters. Collectors return typed `Finding` values and do not write investigations directly.
 - `operations.py` persists jobs before execution, applies concurrency limits, records failures, normalizes entities, archives findings, hashes source payloads, extracts geospatial observations, and invokes correlation.
 - `correlation.py` creates explainable suggestions from conservative normalization keys. Suggestions never become relationships without an investigator decision.
@@ -52,6 +54,10 @@ Failures remain attached to their jobs and can be retried. A successful retry is
 ## Workspace service flow
 
 `app_services.py` composes the application once and exposes stable services to UI, CLI, and future API layers. The UI can ask `UniversalSearchService` for normalized inputs, local FTS matches, and next collector requests without knowing collector IDs. Dashboard, graph, timeline, and enrichment views read through `workspace.py`, keeping presentation code away from SQL and making the next UI overhaul incremental instead of a rewrite.
+
+## Local web flow
+
+`web.py` exposes the same local workspace through JSON routes under `/api/*` and serves `web_static/` for the browser UI. The server binds to loopback by default, applies conservative browser headers, and does not require a hosted Argus service. Job creation still goes through `OperationManager`, so web-triggered collection uses the same durable queue, source provenance, entity normalization, and correlation path as desktop-triggered collection.
 
 ## Free social-source boundary
 

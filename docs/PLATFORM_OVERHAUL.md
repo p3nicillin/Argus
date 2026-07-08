@@ -14,7 +14,7 @@ Status: implemented in the current service-layer pass.
 
 ## Phase 2: Professional desktop workspace
 
-Status: initial shell implemented; deeper per-view redesign remains open.
+Status: initial desktop shell and local web shell implemented; deeper per-view redesign remains open.
 
 - Move the PySide6 UI toward service-backed pages instead of direct repository calls.
 - Add a command palette, saved layout presets, richer notifications, activity center, and keyboard-first navigation.
@@ -50,5 +50,6 @@ The current overhaul pass adds the backend service layer needed by later UI phas
 - `universal.py`: universal input normalizer and search/planning service.
 - `workspace.py`: dashboard, graph, timeline, and enrichment services.
 - `ui.py`: enterprise-style desktop shell with top toolbar, sidebar navigation, dashboard cards, universal search page, inspector dock, collector dock, command palette, persistent layout, and service-backed status panels.
+- `web.py` and `web_static/`: local-first browser UI and JSON API for the same dashboard, search, investigation, graph, timeline, evidence, and report workflows.
 - Expanded campaign planning for free social platforms, phone, hash, address, household, and election-resource workflows.
 - Tests that lock in the new platform behavior.

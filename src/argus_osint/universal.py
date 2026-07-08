@@ -171,7 +171,6 @@ class UniversalSearchService:
         }
 
     def search(self, query: str, case_id: int | None = None, limit: int = 200) -> dict[str, Any]:
-        normalized = self.normalizer.normalize(query)
         local_results = self.repository.search(query, case_id, limit)
         return {
             **self.plan(query),

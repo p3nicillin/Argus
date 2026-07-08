@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Argus OSINT</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">A</div>
+          <div>
+            <strong>Argus</strong>
+            <span>Security Research</span>
+          </div>
+        </div>
+        <nav id="nav">
+          <button class="active" data-view="dashboard">Dashboard</button>
+          <button data-view="search">Universal Search</button>
+          <button data-view="cases">Investigations</button>
+          <button data-view="profiles">Public Profiles</button>
+          <button data-view="infra">Domains & Infrastructure</button>
+          <button data-view="graph">Relationships</button>
+          <button data-view="timeline">Timeline</button>
+          <button data-view="evidence">Evidence</button>
+          <button data-view="reports">Reports</button>
+          <button data-view="settings">Settings</button>
+        </nav>
+      </aside>
+
+      <main>
+        <header class="topbar">
+          <div class="searchbar">
+            <span>Search</span>
+            <input id="globalSearch" placeholder="domain, CVE, email, handle, address, IP..." />
+            <button id="runSearch">Run</button>
+          </div>
+          <div class="top-actions">
+            <button id="newCase">New Case</button>
+            <button id="refresh">Refresh</button>
+            <span id="health" class="pill">Connecting</span>
+          </div>
+        </header>
+
+        <section id="dashboard" class="view active">
+          <div class="hero">
+            <div>
+              <p class="eyebrow">Local-first intelligence workspace</p>
+              <h1>Security Research Dashboard</h1>
+              <p>Live case state, collection status, saved searches, and activity from the local Argus workspace.</p>
+            </div>
+            <button data-jump="search">Start Research</button>
+          </div>
+          <div id="metrics" class="metrics"></div>
+          <div class="grid three">
+            <article class="panel span2">
+              <header><h2>Recent Investigations</h2><span id="caseCount"></span></header>
+              <div id="recentCases" class="list"></div>
+            </article>
+            <article class="panel">
+              <header><h2>System Status</h2></header>
+              <div id="systemStatus" class="status-stack"></div>
+            </article>
+            <article class="panel">
+              <header><h2>Search History</h2></header>
+              <div id="searchHistory" class="list compact"></div>
+            </article>
+            <article class="panel">
+              <header><h2>Saved Searches</h2></header>
+              <div id="savedSearches" class="list compact"></div>
+            </article>
+            <article class="panel">
+              <header><h2>Recent Jobs</h2></header>
+              <div id="recentJobs" class="list compact"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="search" class="view">
+          <div class="hero search-hero">
+            <div>
+              <p class="eyebrow">Universal search</p>
+              <h1>One input, local matches, planned collection</h1>
+              <p id="searchSummary">Normalize a seed and generate bounded free-source OSINT next steps.</p>
+            </div>
+          </div>
+          <div class="grid two">
+            <article class="panel">
+              <header><h2>Local Results</h2><span id="localCount"></span></header>
+              <div id="localResults" class="list"></div>
+            </article>
+            <article class="panel">
+              <header><h2>Recommended Collection</h2><span id="inputKind" class="pill">Ready</span></header>
+              <div id="collectionPlan" class="list"></div>
+            </article>
+          </div>
+        </section>
+
+        <section id="cases" class="view">
+          <div class="section-head">
+            <div><p class="eyebrow">Investigations</p><h1>Case Workspace</h1></div>
+            <button data-jump="dashboard">Dashboard</button>
+          </div>
+          <div id="casesTable" class="table"></div>
+        </section>
+
+        <section id="profiles" class="view"><div class="section-head"><div><p class="eyebrow">Entities</p><h1>Public Profiles</h1></div></div><div id="profileCards" class="cards"></div></section>
+        <section id="infra" class="view"><div class="section-head"><div><p class="eyebrow">Entities</p><h1>Domains & Infrastructure</h1></div></div><div id="infraCards" class="cards"></div></section>
+        <section id="graph" class="view"><div class="section-head"><div><p class="eyebrow">Relationships</p><h1>Entity Graph</h1></div></div><div class="panel"><svg id="graphSvg" viewBox="0 0 960 540" role="img" aria-label="Entity relationship graph"></svg></div></section>
+        <section id="timeline" class="view"><div class="section-head"><div><p class="eyebrow">Timeline</p><h1>Unified Timeline</h1></div></div><div id="timelineList" class="timeline"></div></section>
+        <section id="evidence" class="view"><div class="section-head"><div><p class="eyebrow">Evidence</p><h1>Evidence & Sources</h1></div></div><div id="evidenceTable" class="table"></div></section>
+        <section id="reports" class="view"><div class="section-head"><div><p class="eyebrow">Briefing</p><h1>Security Brief</h1></div></div><pre id="securityBrief" class="brief"></pre></section>
+        <section id="settings" class="view">
+          <div class="section-head"><div><p class="eyebrow">Local web shell</p><h1>Settings</h1></div></div>
+          <div class="panel"><div id="settingsInfo" class="status-stack"></div></div>
+        </section>
+      </main>
+
+      <aside class="inspector">
+        <header>
+          <p class="eyebrow">Inspector</p>
+          <h2 id="selectedTitle">No case selected</h2>
+        </header>
+        <div id="selectedMeta" class="status-stack"></div>
+        <pre id="inspectorJson"></pre>
+      </aside>
+    </div>
+
+    <div id="toast" class="toast"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>
