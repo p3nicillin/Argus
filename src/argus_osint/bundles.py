@@ -287,8 +287,7 @@ class InvestigationBundle:
         total = 0
         names: set[str] = set()
         for member in archive.infolist():
-            path = PurePosixPath(member.filename)
-            if path.is_absolute() or ".." in path.parts or "\\" in member.filename:
+            if InvestigationBundle._unsafe_archive_name(member.filename):
                 raise ValueError(f"Unsafe path in bundle: {member.filename}")
             if member.filename in names:
                 raise ValueError(f"Duplicate path in bundle: {member.filename}")
@@ -305,11 +304,31 @@ class InvestigationBundle:
     def _verify(archive: zipfile.ZipFile, manifest: dict[str, Any]) -> None:
         if manifest.get("format") != "argus-investigation-bundle":
             raise ValueError("Unrecognized bundle manifest")
-        for name, expected in manifest.get("files", {}).items():
-            member = archive.getinfo(name)
+        files = manifest.get("files")
+        if not isinstance(files, dict) or "case.json" not in files:
+            raise ValueError("Bundle manifest is missing required file entries")
+        for name, expected in files.items():
+            if not isinstance(name, str) or InvestigationBundle._unsafe_archive_name(name):
+                raise ValueError(f"Unsafe path in bundle manifest: {name}")
+            if not isinstance(expected, dict) or not {
+                "sha256",
+                "size",
+            } <= expected.keys():
+                raise ValueError(f"Invalid manifest entry for {name}")
+            try:
+                member = archive.getinfo(name)
+            except KeyError as exc:
+                raise ValueError(f"Bundle manifest references missing file: {name}") from exc
+            if member.is_dir():
+                raise ValueError(f"Bundle manifest references a directory: {name}")
             digest = hashlib.sha256()
             with archive.open(member) as stream:
                 while chunk := stream.read(1024 * 1024):
                     digest.update(chunk)
             if member.file_size != expected["size"] or digest.hexdigest() != expected["sha256"]:
                 raise OSError(f"Bundle integrity verification failed for {name}")
+
+    @staticmethod
+    def _unsafe_archive_name(name: str) -> bool:
+        path = PurePosixPath(name)
+        return path.is_absolute() or ".." in path.parts or "\\" in name

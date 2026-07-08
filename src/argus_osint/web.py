@@ -50,6 +50,10 @@ class ArgusWebApplication:
             return self._static(path)
         except ApiError as exc:
             return self._json_response({"error": exc.message}, exc.status)
+        except KeyError as exc:
+            return self._json_response({"error": str(exc).strip("'")}, HTTPStatus.NOT_FOUND)
+        except ValueError as exc:
+            return self._json_response({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         except Exception as exc:
             return self._json_response({"error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
 
@@ -112,9 +116,9 @@ class ArgusWebApplication:
         if parts == ["api", "jobs"] and method == "POST":
             payload = self._payload(body)
             job_id = self.services.operations.create_job(
-                int(payload["case_id"]),
-                str(payload["collector"]),
-                str(payload["query"]),
+                self._payload_int(payload, "case_id"),
+                self._payload_str(payload, "collector"),
+                self._payload_str(payload, "query"),
                 self._dict(payload.get("options")),
             )
             if bool(payload.get("run")):
@@ -126,7 +130,7 @@ class ArgusWebApplication:
             and parts[3] == "events"
             and method == "GET"
         ):
-            return self.services.operations.events(int(parts[2]))
+            return self.services.operations.events(self._case_id(parts[2]))
         raise ApiError(HTTPStatus.NOT_FOUND, f"No route for {method} {path}")
 
     def _case_resource(self, case_id: int, resource: str) -> Any:
@@ -193,7 +197,12 @@ class ArgusWebApplication:
     @classmethod
     def _optional_int(cls, query: dict[str, list[str]], name: str) -> int | None:
         value = cls._query(query, name)
-        return int(value) if value else None
+        if not value:
+            return None
+        try:
+            return int(value)
+        except ValueError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"{name} must be an integer") from exc
 
     @staticmethod
     def _case_id(value: str) -> int:
@@ -201,6 +210,24 @@ class ArgusWebApplication:
             return int(value)
         except ValueError as exc:
             raise ApiError(HTTPStatus.BAD_REQUEST, "Investigation id must be an integer") from exc
+
+    @staticmethod
+    def _payload_str(payload: dict[str, Any], name: str) -> str:
+        if name not in payload:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"{name} is required")
+        value = str(payload[name]).strip()
+        if not value:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"{name} is required")
+        return value
+
+    @staticmethod
+    def _payload_int(payload: dict[str, Any], name: str) -> int:
+        if name not in payload:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"{name} is required")
+        try:
+            return int(payload[name])
+        except (TypeError, ValueError) as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, f"{name} must be an integer") from exc
 
     @staticmethod
     def _list(value: Any) -> list[str]:

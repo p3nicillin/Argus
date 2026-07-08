@@ -7,6 +7,7 @@ const state = {
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
+const caseViews = new Set(["profiles", "infra", "graph", "timeline", "evidence", "reports"]);
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -26,9 +27,10 @@ function toast(message) {
 }
 
 function setView(view) {
-  $$(".view").forEach((node) => node.classList.toggle("active", node.id === view));
-  $$("#nav button").forEach((button) => button.classList.toggle("active", button.dataset.view === view));
-  if (view !== "dashboard" && view !== "search" && view !== "cases" && !state.selectedCase) {
+  const target = caseViews.has(view) && !state.selectedCase ? "cases" : view;
+  $$(".view").forEach((node) => node.classList.toggle("active", node.id === target));
+  $$("#nav button").forEach((button) => button.classList.toggle("active", button.dataset.view === target));
+  if (target !== view) {
     toast("Select an investigation first");
   }
 }

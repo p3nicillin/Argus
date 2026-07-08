@@ -82,3 +82,41 @@ def test_web_app_can_create_case_from_json(tmp_path: Path):
         assert payload["tags"] == ["web"]
     finally:
         services.close()
+
+
+def test_web_app_returns_client_errors_for_bad_api_inputs(tmp_path: Path):
+    services = ArgusServices.build(db_path=tmp_path / "argus.sqlite3", actor="analyst")
+    try:
+        app = ArgusWebApplication(services)
+
+        status, _content_type, body = app.handle("GET", "/api/search?q=example&limit=lots")
+        assert status == 400
+        assert json.loads(body)["error"] == "limit must be an integer"
+
+        status, _content_type, body = app.handle("GET", "/api/investigations/not-a-number")
+        assert status == 400
+        assert json.loads(body)["error"] == "Investigation id must be an integer"
+
+        status, _content_type, body = app.handle("GET", "/api/investigations/99999")
+        assert status == 404
+        assert json.loads(body)["error"] == "Investigation 99999 does not exist"
+
+        status, _content_type, body = app.handle(
+            "POST",
+            "/api/jobs",
+            json.dumps({"case_id": "nope", "collector": "dns", "query": "example.org"}).encode(
+                "utf-8"
+            ),
+        )
+        assert status == 400
+        assert json.loads(body)["error"] == "case_id must be an integer"
+
+        status, _content_type, body = app.handle(
+            "POST",
+            "/api/jobs",
+            json.dumps({"case_id": 1, "collector": "dns"}).encode("utf-8"),
+        )
+        assert status == 400
+        assert json.loads(body)["error"] == "query is required"
+    finally:
+        services.close()

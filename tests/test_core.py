@@ -157,6 +157,31 @@ def test_plugin_install_and_out_of_process_rpc(repository: Repository, tmp_path:
     assert asyncio.run(manager.invoke("echo", "collect", {"value": 42})) == {"value": 42}
 
 
+def test_plugin_install_rejects_unsafe_archive_members(
+    repository: Repository, tmp_path: Path
+) -> None:
+    package = tmp_path / "unsafe.zip"
+    with zipfile.ZipFile(package, "w") as archive:
+        archive.writestr(
+            "plugin.json",
+            json.dumps(
+                {
+                    "id": "unsafe",
+                    "name": "Unsafe",
+                    "version": "1.0.0",
+                    "description": "Unsafe ZIP path",
+                    "entrypoint": "main.py",
+                    "permissions": [],
+                }
+            ),
+        )
+        archive.writestr("nested\\main.py", "print('unsafe')\n")
+
+    manager = PluginManager(tmp_path / "plugins", repository.db)
+    with pytest.raises(ValueError, match="unsafe path"):
+        manager.install(package)
+
+
 class DemoCollector:
     id = "demo"
     name = "Demo collector"
@@ -220,6 +245,25 @@ def test_investigation_bundle_round_trip(repository: Repository, tmp_path: Path)
     assert len(repository.rows("evidence", imported_id)) == 1
     assert len(repository.rows("comments", imported_id)) == 1
     assert evidence.verify(repository.rows("evidence", imported_id)[0]["id"])[0]
+
+
+def test_bundle_inspection_rejects_unverified_case_payload(
+    repository: Repository, tmp_path: Path
+) -> None:
+    path = tmp_path / "tampered.argus"
+    case = {"bundle_version": 1, "investigation": {"title": "Tampered"}, "records": {}}
+    manifest = {
+        "format": "argus-investigation-bundle",
+        "version": 1,
+        "files": {},
+    }
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("case.json", json.dumps(case).encode("utf-8"))
+        archive.writestr("manifest.json", json.dumps(manifest).encode("utf-8"))
+
+    bundle = InvestigationBundle(repository, EvidenceManager(repository, tmp_path / "managed"))
+    with pytest.raises(ValueError, match="missing required file entries"):
+        bundle.inspect(path)
 
 
 def test_entity_merge_preserves_aliases_links_and_locations(repository: Repository) -> None:

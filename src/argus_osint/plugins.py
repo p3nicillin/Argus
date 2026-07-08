@@ -9,7 +9,7 @@ import sys
 import tempfile
 import zipfile
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .db import Database
@@ -46,11 +46,13 @@ class PluginManifest:
         ):
             raise ValueError("Plugin id may contain only letters, numbers, hyphens and underscores")
         permissions = tuple(value.get("permissions", []))
+        if not all(isinstance(permission, str) for permission in permissions):
+            raise ValueError("Plugin permissions must be strings")
         unknown = set(permissions) - ALLOWED_PERMISSIONS
         if unknown:
             raise ValueError(f"Unsupported plugin permissions: {', '.join(sorted(unknown))}")
         entrypoint = value["entrypoint"]
-        if Path(entrypoint).is_absolute() or ".." in Path(entrypoint).parts:
+        if not isinstance(entrypoint, str) or _unsafe_archive_name(entrypoint):
             raise ValueError("Plugin entrypoint must stay inside its plugin folder")
         return cls(
             plugin_id,
@@ -109,13 +111,13 @@ class PluginManager:
         with tempfile.TemporaryDirectory(prefix="argus-plugin-") as temporary:
             staging = Path(temporary)
             with zipfile.ZipFile(archive) as package:
+                names: set[str] = set()
                 for item in package.infolist():
-                    destination = (staging / item.filename).resolve()
-                    if (
-                        staging.resolve() not in destination.parents
-                        and destination != staging.resolve()
-                    ):
+                    if _unsafe_archive_name(item.filename):
                         raise ValueError("Plugin archive contains an unsafe path")
+                    if item.filename in names:
+                        raise ValueError(f"Plugin archive contains a duplicate path: {item.filename}")
+                    names.add(item.filename)
                 package.extractall(staging)
             candidates = (
                 [staging]
@@ -214,3 +216,8 @@ class PluginManager:
             while chunk := stream.read(1024 * 1024):
                 digest.update(chunk)
         return digest.hexdigest()
+
+
+def _unsafe_archive_name(name: str) -> bool:
+    path = PurePosixPath(name)
+    return path.is_absolute() or ".." in path.parts or "\\" in name
