@@ -7,6 +7,7 @@ import json
 import re
 import socket
 import ssl
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -30,6 +31,22 @@ def _ensure_public_host(host: str, port: int = 443) -> None:
         address = ipaddress.ip_address(result[4][0])
         if not address.is_global:
             raise ValueError("The target must resolve only to public IP addresses")
+
+
+def _web_origin(query: str) -> tuple[str, str, int]:
+    value = query.strip().rstrip("/")
+    if not urlparse(value).scheme:
+        value = "https://" + value
+    parsed = urlparse(value)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+    ):
+        raise ValueError("Enter a valid public HTTP or HTTPS origin")
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    return f"{parsed.scheme}://{parsed.netloc}", parsed.hostname.lower(), port
 
 
 @dataclass(slots=True)
@@ -365,6 +382,412 @@ class WebCollector:
     def _title(body: str) -> str:
         match = re.search(r"<title[^>]*>(.*?)</title>", body, re.I | re.S)
         return re.sub(r"\s+", " ", match.group(1)).strip()[:500] if match else ""
+
+
+class SecurityTxtCollector:
+    id, name = "security_txt", "Security.txt"
+    description, query_hint = (
+        "Public vulnerability disclosure contacts and policy fields from security.txt",
+        "example.com",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        origin, host, port = _web_origin(query)
+        await asyncio.to_thread(_ensure_public_host, host, port)
+        locations = ["/.well-known/security.txt", "/security.txt"]
+        source_url = origin + locations[0]
+        text = ""
+        found = False
+        for location in locations:
+            candidate = origin + location
+            try:
+                response = await context.request(
+                    "GET",
+                    candidate,
+                    headers={"Accept": "text/plain,*/*"},
+                    cache_ttl=3600,
+                )
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code == 404:
+                    continue
+                raise
+            source_url = candidate
+            text = response.text[:200_000]
+            found = bool(text.strip())
+            break
+        fields = self._fields(text)
+        return [
+            Finding(
+                f"Security.txt: {host}",
+                source_url,
+                {
+                    "found": found,
+                    "checked_locations": [origin + location for location in locations],
+                    "fields": fields,
+                    "raw": text,
+                },
+                confidence=0.8 if found else 0.2,
+                entities=[{"kind": "domain", "value": host, "verified": True}],
+            )
+        ]
+
+    @staticmethod
+    def _fields(text: str) -> dict[str, list[str]]:
+        fields: dict[str, list[str]] = {}
+        for line in text.splitlines():
+            value = line.strip()
+            if not value or value.startswith("#") or ":" not in value:
+                continue
+            key, item = value.split(":", 1)
+            fields.setdefault(key.strip().lower(), []).append(item.strip())
+        return fields
+
+
+class RobotsSitemapCollector:
+    id, name = "robots_sitemap", "Robots & sitemap"
+    description, query_hint = (
+        "Public robots.txt directives and sitemap URLs for a website origin",
+        "example.com",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        origin, host, port = _web_origin(query)
+        await asyncio.to_thread(_ensure_public_host, host, port)
+        robots_text = await self._text(context, origin + "/robots.txt")
+        sitemap_text = await self._text(context, origin + "/sitemap.xml")
+        robots = self._robots(robots_text)
+        sitemap_urls = sorted({
+            *robots.get("sitemaps", []),
+            *self._sitemap_locations(sitemap_text),
+        })
+        entities = [{"kind": "domain", "value": host, "verified": True}]
+        entities.extend(
+            {"kind": "url", "value": url, "verified": True} for url in sitemap_urls[:100]
+        )
+        return [
+            Finding(
+                f"Robots and sitemap: {host}",
+                origin + "/robots.txt",
+                {
+                    "robots_found": bool(robots_text.strip()),
+                    "sitemap_found": bool(sitemap_text.strip()),
+                    "robots": robots,
+                    "sitemap_urls": sitemap_urls,
+                },
+                confidence=0.8 if robots_text or sitemap_text else 0.2,
+                entities=entities,
+            )
+        ]
+
+    @staticmethod
+    async def _text(context: CollectorContext, url: str) -> str:
+        try:
+            response = await context.request(
+                "GET", url, headers={"Accept": "text/plain,application/xml,*/*"}, cache_ttl=3600
+            )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                return ""
+            raise
+        return response.text[:1_000_000]
+
+    @staticmethod
+    def _robots(text: str) -> dict[str, Any]:
+        rules: dict[str, Any] = {"user_agents": [], "allow": [], "disallow": [], "sitemaps": []}
+        for line in text.splitlines():
+            value = line.strip()
+            if not value or value.startswith("#") or ":" not in value:
+                continue
+            key, item = [part.strip() for part in value.split(":", 1)]
+            lowered = key.lower()
+            if lowered == "user-agent":
+                rules["user_agents"].append(item)
+            elif lowered == "allow":
+                rules["allow"].append(item)
+            elif lowered == "disallow":
+                rules["disallow"].append(item)
+            elif lowered == "sitemap":
+                rules["sitemaps"].append(item)
+        return rules
+
+    @staticmethod
+    def _sitemap_locations(text: str) -> list[str]:
+        if not text.strip():
+            return []
+        try:
+            root = ET.fromstring(text)
+        except ET.ParseError:
+            return []
+        return [
+            element.text.strip()
+            for element in root.iter()
+            if element.tag.rsplit("}", 1)[-1] == "loc" and element.text and element.text.strip()
+        ][:1000]
+
+
+class NVDCollector:
+    id, name = "nvd_cve", "NVD CVE intelligence"
+    description, query_hint = (
+        "Live CVE records, CVSS metrics, CPE matches and references from NIST NVD",
+        "CVE-2024-3094 or product keyword",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        value = query.strip()
+        if len(value) < 2:
+            raise ValueError("Enter a CVE ID or vulnerability keyword")
+        params: dict[str, Any] = {"resultsPerPage": 20}
+        cve_id = value.upper()
+        if re.fullmatch(r"CVE-\d{4}-\d{4,}", cve_id):
+            params["cveId"] = cve_id
+        else:
+            params["keywordSearch"] = value
+        data = await context.get_json(
+            "https://services.nvd.nist.gov/rest/json/cves/2.0",
+            params=params,
+            cache_ttl=3600,
+        )
+        vulnerabilities = (data or {}).get("vulnerabilities", [])
+        cves = [item.get("cve", {}) for item in vulnerabilities]
+        entities: list[dict[str, Any]] = []
+        for cve in cves:
+            cve_value = cve.get("id")
+            if cve_value:
+                entities.append({"kind": "cve", "value": cve_value, "verified": True})
+            for reference in cve.get("references", {}).get("referenceData", [])[:20]:
+                if reference.get("url"):
+                    entities.append({
+                        "kind": "url",
+                        "value": reference["url"],
+                        "verified": True,
+                        "confidence": 0.6,
+                    })
+        title = f"NVD CVE: {cve_id}" if "cveId" in params else f"NVD CVE search: {value}"
+        source_url = (
+            f"https://nvd.nist.gov/vuln/detail/{quote(cve_id)}"
+            if "cveId" in params
+            else f"https://nvd.nist.gov/vuln/search/results?query={quote(value)}"
+        )
+        return [
+            Finding(
+                title,
+                source_url,
+                {
+                    "query": value,
+                    "result_count": len(cves),
+                    "total_results": data.get("totalResults", len(cves)) if data else len(cves),
+                    "vulnerabilities": cves,
+                },
+                confidence=0.9 if cves else 0.2,
+                entities=entities,
+            )
+        ]
+
+
+class CISAKEVCollector:
+    id, name = "cisa_kev", "CISA KEV catalog"
+    description, query_hint = (
+        "Known exploited vulnerabilities from CISA's live KEV catalog",
+        "CVE-2024-3094, vendor, product or ransomware",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        value = query.strip()
+        if len(value) < 2:
+            raise ValueError("Enter a CVE ID, vendor, product or keyword")
+        catalog = await context.get_json(
+            "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json",
+            cache_ttl=3600,
+        )
+        needle = value.casefold()
+        entries = [
+            item
+            for item in (catalog or {}).get("vulnerabilities", [])
+            if needle in json.dumps(item, sort_keys=True).casefold()
+        ]
+        entities = [
+            {"kind": "cve", "value": item["cveID"], "verified": True}
+            for item in entries
+            if item.get("cveID")
+        ]
+        for item in entries:
+            if item.get("vendorProject"):
+                entities.append({
+                    "kind": "company",
+                    "value": item["vendorProject"],
+                    "verified": True,
+                    "confidence": 0.7,
+                })
+        return [
+            Finding(
+                f"CISA KEV: {value}",
+                "https://www.cisa.gov/known-exploited-vulnerabilities-catalog",
+                {
+                    "catalog_version": catalog.get("catalogVersion", ""),
+                    "date_released": catalog.get("dateReleased", ""),
+                    "result_count": len(entries),
+                    "vulnerabilities": entries[:200],
+                },
+                confidence=0.9 if entries else 0.2,
+                entities=entities,
+            )
+        ]
+
+
+class EPSSCollector:
+    id, name = "epss", "EPSS exploit prediction"
+    description, query_hint = (
+        "Exploit Prediction Scoring System probability and percentile from FIRST",
+        "CVE-2024-3094",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        cve = query.strip().upper()
+        if not re.fullmatch(r"CVE-\d{4}-\d{4,}", cve):
+            raise ValueError("Enter a valid CVE ID")
+        data = await context.get_json(
+            "https://api.first.org/data/v1/epss",
+            params={"cve": cve},
+            cache_ttl=3600,
+        )
+        rows = (data or {}).get("data", [])
+        score = rows[0] if rows else {}
+        probability = float(score.get("epss", 0.0) or 0.0)
+        percentile = float(score.get("percentile", 0.0) or 0.0)
+        return [
+            Finding(
+                f"EPSS: {cve}",
+                f"https://www.first.org/epss/data_stats?cve={quote(cve)}",
+                {
+                    "cve": cve,
+                    "found": bool(score),
+                    "epss": probability,
+                    "percentile": percentile,
+                    "date": score.get("date", ""),
+                    "raw": score,
+                },
+                confidence=0.85 if score else 0.2,
+                entities=[
+                    {
+                        "kind": "cve",
+                        "value": cve,
+                        "verified": bool(score),
+                        "attributes": {"epss": probability, "percentile": percentile},
+                    }
+                ],
+            )
+        ]
+
+
+class ShodanInternetDBCollector:
+    id, name = "shodan_internetdb", "Shodan InternetDB"
+    description, query_hint = (
+        "Keyless public IP exposure snapshot: ports, hostnames, CPEs, tags and CVEs",
+        "8.8.8.8",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        ip = str(ipaddress.ip_address(query.strip()))
+        if not ipaddress.ip_address(ip).is_global:
+            raise ValueError("InternetDB requires a public IP address")
+        try:
+            data = await context.get_json(f"https://internetdb.shodan.io/{quote(ip)}", cache_ttl=900)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                data = {}
+            else:
+                raise
+        hostnames = data.get("hostnames") or []
+        vulns = data.get("vulns") or []
+        entities: list[dict[str, Any]] = [{"kind": "ip", "value": ip, "verified": True}]
+        entities.extend({"kind": "domain", "value": host, "verified": True} for host in hostnames)
+        entities.extend({"kind": "cve", "value": cve, "verified": True} for cve in vulns)
+        return [
+            Finding(
+                f"Shodan InternetDB: {ip}",
+                f"https://www.shodan.io/host/{quote(ip)}",
+                {
+                    "found": bool(data),
+                    "ip": ip,
+                    "ports": data.get("ports", []),
+                    "hostnames": hostnames,
+                    "cpes": data.get("cpes", []),
+                    "tags": data.get("tags", []),
+                    "vulnerabilities": vulns,
+                    "raw": data,
+                },
+                confidence=0.75 if data else 0.2,
+                entities=entities,
+            )
+        ]
+
+
+class UrlscanCollector:
+    id, name = "urlscan", "urlscan search"
+    description, query_hint = (
+        "Public urlscan.io search results for domains, URLs, IPs and hashes",
+        "example.com or https://example.com",
+    )
+
+    async def collect(self, query: str, context: CollectorContext) -> list[Finding]:
+        value = query.strip()
+        if len(value) < 2:
+            raise ValueError("Enter a domain, URL, IP address or search term")
+        search = self._search_query(value)
+        data = await context.get_json(
+            "https://urlscan.io/api/v1/search/",
+            params={"q": search, "size": 50},
+            cache_ttl=900,
+        )
+        results = (data or {}).get("results", [])
+        entities: list[dict[str, Any]] = []
+        for item in results:
+            page = item.get("page", {}) or {}
+            task = item.get("task", {}) or {}
+            if page.get("domain"):
+                entities.append({"kind": "domain", "value": page["domain"], "verified": True})
+            if page.get("ip"):
+                entities.append({"kind": "ip", "value": page["ip"], "verified": True})
+            if page.get("url"):
+                entities.append({"kind": "url", "value": page["url"], "verified": True})
+            if task.get("uuid"):
+                entities.append({
+                    "kind": "urlscan_uuid",
+                    "value": task["uuid"],
+                    "verified": True,
+                    "confidence": 0.6,
+                })
+        return [
+            Finding(
+                f"urlscan search: {value}",
+                f"https://urlscan.io/search/#{quote(search)}",
+                {
+                    "query": search,
+                    "result_count": len(results),
+                    "total": data.get("total", len(results)) if data else len(results),
+                    "results": results,
+                },
+                confidence=0.65 if results else 0.2,
+                entities=entities,
+            )
+        ]
+
+    @staticmethod
+    def _search_query(value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme in {"http", "https"} and parsed.hostname:
+            return f'page.url:"{value}"'
+        try:
+            ipaddress.ip_address(value)
+            return f"page.ip:{value}"
+        except ValueError:
+            pass
+        if re.fullmatch(
+            r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}",
+            value,
+        ):
+            return f"domain:{value.lower().rstrip('.')}"
+        return value
 
 
 class CertificateTransparencyCollector:
@@ -1392,8 +1815,15 @@ class CollectorRegistry:
             EmailCollector(),
             PhoneCollector(),
             WebCollector(),
+            SecurityTxtCollector(),
+            RobotsSitemapCollector(),
+            NVDCollector(),
+            CISAKEVCollector(),
+            EPSSCollector(),
             CertificateTransparencyCollector(),
             IPCollector(),
+            ShodanInternetDBCollector(),
+            UrlscanCollector(),
             GitHubCollector(),
             UsernameCorrelationCollector(),
             SteamCollector(),

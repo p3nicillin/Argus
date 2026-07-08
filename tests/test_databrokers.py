@@ -15,17 +15,17 @@ def test_candidate_links_for_name():
     searchable = [b for b in databrokers.BROKERS if b.search_url]
     assert len(leads) == len(searchable)
     assert len(leads) >= 20  # registry expanded to a useful breadth
-    spokeo = next(l for l in leads if l["broker"] == "Spokeo")
+    spokeo = next(lead for lead in leads if lead["broker"] == "Spokeo")
     assert spokeo["search_url"] == "https://www.spokeo.com/Luke+McClellan"
     # every lead is explicitly an unverified candidate
-    assert all(l["identity_match"] is False for l in leads)
-    assert all(l["status"] == "unverified candidate" for l in leads)
+    assert all(lead["identity_match"] is False for lead in leads)
+    assert all(lead["status"] == "unverified candidate" for lead in leads)
 
 
 def test_candidate_links_email_uses_local_part():
     leads = databrokers.candidate_links("jane.doe@example.com")
-    assert all("jane.doe" in l["search_url"] for l in leads)
-    assert all("example.com" not in l["search_url"] for l in leads)
+    assert all("jane.doe" in lead["search_url"] for lead in leads)
+    assert all("example.com" not in lead["search_url"] for lead in leads)
 
 
 def test_candidate_links_rejects_empty():

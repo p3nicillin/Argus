@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .repository import Repository, now
+from .security import SecurityBriefBuilder
 
 
 class ReportEngine:
@@ -57,6 +58,52 @@ class ReportEngine:
             self._docx(case_id, destination)
         else:
             raise ValueError(f"Unsupported report format: {format_name}")
+        return destination
+
+    def export_security_brief(
+        self,
+        case_id: int,
+        destination: Path,
+        format_name: str | None = None,
+    ) -> Path:
+        format_name = (format_name or destination.suffix.lstrip(".")).lower()
+        builder = SecurityBriefBuilder(self.repository)
+        if format_name == "json":
+            destination.write_text(
+                json.dumps(builder.build(case_id), indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        elif format_name in {"md", "markdown"}:
+            destination.write_text(builder.markdown(case_id), encoding="utf-8")
+        elif format_name in {"txt", "text"}:
+            destination.write_text(
+                builder.markdown(case_id).replace("#", "").replace("`", ""),
+                encoding="utf-8",
+            )
+        elif format_name in {"html", "htm"}:
+            brief = builder.build(case_id)
+            risks = "".join(
+                "<article>"
+                f"<h3>{html.escape(str(item['score']))} {html.escape(item['title'])}</h3>"
+                f"<p>{html.escape(item['kind'])}: {html.escape(item['value'])}</p>"
+                "<ul>"
+                + "".join(f"<li>{html.escape(reason)}</li>" for reason in item["reasons"])
+                + "</ul></article>"
+                for item in brief["top_risks"]
+            )
+            recommendations = "".join(
+                f"<li><code>{html.escape(item['collector'])}</code> on "
+                f"<code>{html.escape(item['query'])}</code>: {html.escape(item['reason'])}</li>"
+                for item in brief["recommended_collection"]
+            )
+            destination.write_text(
+                f"""<!doctype html><html lang=en><head><meta charset=utf-8><title>{html.escape(brief["investigation"]["title"])} security brief</title><style>
+body{{font:14px system-ui,sans-serif;color:#18202b;max-width:960px;margin:40px auto;padding:0 28px;background:#f4f7fa}}header,article,section{{background:white;border:1px solid #dce3ea;border-radius:8px;padding:18px;margin:12px 0}}h1{{margin:0}}h2{{color:#9b2727;border-bottom:2px solid #d25a45;padding-bottom:6px}}code{{background:#eef2f6;padding:2px 4px;border-radius:4px}}.meta{{color:#607080}}
+</style></head><body><header><h1>{html.escape(brief["investigation"]["title"])}</h1><p class=meta>Security research brief · Generated: {now()}</p></header><section><h2>Summary</h2><p>{brief["summary"]["risk_count"]} risks · {brief["summary"]["entity_count"]} entities · {brief["summary"]["source_count"]} sources</p></section><section><h2>Top risks</h2>{risks or '<p>No prioritized security risks were found.</p>'}</section><section><h2>Recommended collection</h2><ul>{recommendations}</ul></section></body></html>""",
+                encoding="utf-8",
+            )
+        else:
+            raise ValueError(f"Unsupported security brief format: {format_name}")
         return destination
 
     def _sections(self, case_id: int) -> list[tuple[str, list[dict[str, Any]]]]:

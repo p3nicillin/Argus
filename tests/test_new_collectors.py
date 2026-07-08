@@ -8,17 +8,25 @@ from __future__ import annotations
 
 import asyncio
 
+import httpx
 import pytest
 
 from argus_osint.collectors import (
     BreachCollector,
+    CISAKEVCollector,
     CollectorRegistry,
+    EPSSCollector,
     GitLabCollector,
     GravatarCollector,
     HackerNewsCollector,
     KeybaseCollector,
+    NVDCollector,
     PackageRegistryCollector,
     RedditCollector,
+    RobotsSitemapCollector,
+    SecurityTxtCollector,
+    ShodanInternetDBCollector,
+    UrlscanCollector,
 )
 
 
@@ -40,6 +48,30 @@ class FakeContext:
                 return payload
         return {}
 
+    async def request(
+        self,
+        method,
+        url,
+        *,
+        headers=None,
+        params=None,
+        cache_ttl=None,
+        follow_redirects=True,
+    ):
+        self.requested.append(url)
+        for fragment, payload in self._responses.items():
+            if fragment in url:
+                if isinstance(payload, httpx.Response):
+                    return payload
+                if isinstance(payload, dict) and "__text__" in payload:
+                    return httpx.Response(
+                        payload.get("__status__", 200),
+                        text=payload["__text__"],
+                        request=httpx.Request(method, url),
+                    )
+        response = httpx.Response(404, request=httpx.Request(method, url))
+        raise httpx.HTTPStatusError("not found", request=response.request, response=response)
+
 
 def _run(coro):
     return asyncio.run(coro)
@@ -48,7 +80,9 @@ def _run(coro):
 def test_all_new_collectors_registered():
     ids = {c.id for c in CollectorRegistry().all()}
     for expected in {"data_broker", "gravatar", "keybase", "hackernews",
-                     "reddit", "gitlab", "package_registry"}:
+                     "reddit", "gitlab", "package_registry", "security_txt",
+                     "robots_sitemap", "nvd_cve", "cisa_kev", "epss",
+                     "shodan_internetdb", "urlscan"}:
         assert expected in ids
 
 
@@ -191,3 +225,125 @@ def test_package_registry_not_found():
     findings = _run(PackageRegistryCollector().collect("zzz-nonexistent", FakeContext()))
     assert len(findings) == 1
     assert findings[0].data["found"] is False
+
+
+def test_security_txt_parses_disclosure_fields(monkeypatch):
+    monkeypatch.setattr("argus_osint.collectors._ensure_public_host", lambda host, port=443: None)
+    ctx = FakeContext({
+        "/.well-known/security.txt": {"__text__": (
+            "Contact: mailto:security@example.org\n"
+            "Expires: 2027-01-01T00:00:00Z\n"
+            "Policy: https://example.org/security\n"
+        )},
+    })
+    f = _run(SecurityTxtCollector().collect("example.org", ctx))[0]
+    assert f.data["found"] is True
+    assert f.data["fields"]["contact"] == ["mailto:security@example.org"]
+    assert f.entities[0] == {"kind": "domain", "value": "example.org", "verified": True}
+
+
+def test_robots_sitemap_extracts_urls(monkeypatch):
+    monkeypatch.setattr("argus_osint.collectors._ensure_public_host", lambda host, port=443: None)
+    ctx = FakeContext({
+        "/robots.txt": {"__text__": (
+            "User-agent: *\n"
+            "Disallow: /private\n"
+            "Sitemap: https://example.org/from-robots.xml\n"
+        )},
+        "/sitemap.xml": {"__text__": (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            "<url><loc>https://example.org/about</loc></url>"
+            "</urlset>"
+        )},
+    })
+    f = _run(RobotsSitemapCollector().collect("https://example.org", ctx))[0]
+    assert f.data["robots"]["disallow"] == ["/private"]
+    assert set(f.data["sitemap_urls"]) == {
+        "https://example.org/about",
+        "https://example.org/from-robots.xml",
+    }
+    assert ("url", "https://example.org/about") in {
+        (entity["kind"], entity["value"]) for entity in f.entities
+    }
+
+
+def test_nvd_cve_extracts_cve_and_reference_entities():
+    ctx = FakeContext({"services.nvd.nist.gov": {
+        "totalResults": 1,
+        "vulnerabilities": [{
+            "cve": {
+                "id": "CVE-2024-3094",
+                "references": {"referenceData": [
+                    {"url": "https://example.org/advisory"},
+                ]},
+            },
+        }],
+    }})
+    f = _run(NVDCollector().collect("CVE-2024-3094", ctx))[0]
+    assert f.data["result_count"] == 1
+    assert ("cve", "CVE-2024-3094") in {(e["kind"], e["value"]) for e in f.entities}
+    assert ("url", "https://example.org/advisory") in {
+        (e["kind"], e["value"]) for e in f.entities
+    }
+
+
+def test_cisa_kev_filters_live_catalog_rows():
+    ctx = FakeContext({"known_exploited_vulnerabilities": {
+        "catalogVersion": "2026.07.08",
+        "dateReleased": "2026-07-08",
+        "vulnerabilities": [
+            {"cveID": "CVE-2024-3094", "vendorProject": "XZ Utils",
+             "product": "XZ", "knownRansomwareCampaignUse": "Unknown"},
+            {"cveID": "CVE-2023-0001", "vendorProject": "Other", "product": "Thing"},
+        ],
+    }})
+    f = _run(CISAKEVCollector().collect("xz", ctx))[0]
+    assert f.data["result_count"] == 1
+    assert ("cve", "CVE-2024-3094") in {(e["kind"], e["value"]) for e in f.entities}
+    assert ("company", "XZ Utils") in {(e["kind"], e["value"]) for e in f.entities}
+
+
+def test_epss_returns_probability_and_percentile():
+    ctx = FakeContext({"api.first.org": {"data": [
+        {"cve": "CVE-2024-3094", "epss": "0.94421",
+         "percentile": "0.99911", "date": "2026-07-08"},
+    ]}})
+    f = _run(EPSSCollector().collect("CVE-2024-3094", ctx))[0]
+    assert f.data["found"] is True
+    assert f.data["epss"] == pytest.approx(0.94421)
+    assert f.entities[0]["attributes"]["percentile"] == pytest.approx(0.99911)
+
+
+def test_shodan_internetdb_extracts_exposure_entities():
+    ctx = FakeContext({"internetdb.shodan.io": {
+        "ip": "8.8.8.8",
+        "ports": [53, 443],
+        "hostnames": ["dns.google"],
+        "cpes": ["cpe:/a:example:service"],
+        "tags": ["cdn"],
+        "vulns": ["CVE-2024-0001"],
+    }})
+    f = _run(ShodanInternetDBCollector().collect("8.8.8.8", ctx))[0]
+    assert f.data["ports"] == [53, 443]
+    assert ("ip", "8.8.8.8") in {(e["kind"], e["value"]) for e in f.entities}
+    assert ("domain", "dns.google") in {(e["kind"], e["value"]) for e in f.entities}
+    assert ("cve", "CVE-2024-0001") in {(e["kind"], e["value"]) for e in f.entities}
+
+
+def test_urlscan_search_extracts_page_entities():
+    ctx = FakeContext({"urlscan.io": {
+        "total": 1,
+        "results": [{
+            "task": {"uuid": "scan-uuid"},
+            "page": {"domain": "example.org", "ip": "93.184.216.34",
+                     "url": "https://example.org/login"},
+        }],
+    }})
+    f = _run(UrlscanCollector().collect("example.org", ctx))[0]
+    assert f.data["query"] == "domain:example.org"
+    entities = {(e["kind"], e["value"]) for e in f.entities}
+    assert ("domain", "example.org") in entities
+    assert ("ip", "93.184.216.34") in entities
+    assert ("url", "https://example.org/login") in entities
+    assert ("urlscan_uuid", "scan-uuid") in entities

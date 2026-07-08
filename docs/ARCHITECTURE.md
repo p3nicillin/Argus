@@ -40,6 +40,12 @@ Explainable correlation suggestions --investigator review--> relationships
 
 Failures remain attached to their jobs and can be retried. A successful retry is a new job, preserving the original failure rather than rewriting history.
 
+## Campaign and brief flow
+
+`campaigns.py` adds an orchestration layer above individual collectors. A campaign plan maps a seed or archived entity to a bounded, explainable set of collector requests. `CampaignRunner` executes those requests through `OperationManager`, so campaign output still follows the same durable job, intelligence, entity, provenance, location, and correlation path as a manually queued collection.
+
+`security.py` builds security-research briefs from records already admitted into an investigation. The brief builder ranks CVEs, exposed public services, breach exposure, and disclosure gaps from archived intelligence; every risk item preserves its reasons and source URLs. `reports.py` can export these briefs separately from full case reports for quick triage handoff.
+
 ## Trust semantics
 
 Argus distinguishes these concepts throughout the model:
